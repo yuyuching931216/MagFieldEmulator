@@ -47,6 +47,7 @@ class MagneticFieldController:
         self.command_interface.register_command("save config", lambda _: self._cmd_save_config(), "保存當前設定")
         self.command_interface.register_command("stop", lambda _: self._cmd_stop(), "停止程式")
         self.command_interface.register_command("help", lambda _: self.command_interface.show_help(), "顯示此幫助")
+        self.command_interface.register_command("jump", self._cmd_jump(), "跳至指定行數", "用法: jump <行數>")
 
     @staticmethod
     def _load_config() -> AppConfig:
@@ -106,14 +107,21 @@ class MagneticFieldController:
                 return
 
             self.state.task_active = True
+            
             print("DAQ任務已初始化，開始輸出...")
             
-            for i, row in self.dataframe.iterrows():
+            self.state.current_row = 0
+            while self.state.current_row < len(self.dataframe):
+                    
+                if self.state.skipped_row is not None:
+                    self.state.current_row = self.state.skipped_row
+                    self.state.skipped_row = None
+                
+                row = self.dataframe.iloc[self.state.current_row]
+                
                 if self.state.stop:
                     break
-                
-                self.state.current_row = i
-                
+                 
                 while self.state.paused and not self.state.stop:
                     time.sleep(0.1)
                 
@@ -139,6 +147,7 @@ class MagneticFieldController:
 
                 # 記錄 log
                 self.log_manager.add_entry({
+                    "index": self.state.current_row,	
                     "utc_time": now,
                     "local_time": local_time,
                     "bx_nt": row.Bx,
@@ -149,6 +158,8 @@ class MagneticFieldController:
                     "vz": vz,
                     "success": voltage_output_success
                 })
+                
+                self.state.current_row += 1
                 
                 # 定期寫入日誌
                 rows_processed += 1
@@ -236,6 +247,27 @@ class MagneticFieldController:
     def _cmd_stop(self) -> bool:
         self.safe_stop()
         return False  # 回傳 False 表示應該結束命令循環
+    def _cmd_jump(self) -> bool:
+        try:
+            parts = self.command_interface.get_command().split()
+            if len(parts) != 2:
+                raise ValueError("參數數量錯誤")
+            row_number = int(parts[1])
+            if row_number < 0 or row_number >= len(self.dataframe):
+                raise ValueError("行數超出範圍")
+            self.state.skipped_row = row_number
+            print(f"跳至行數 {row_number}")
+        except ValueError as e:
+            print(f"無效的行數: {e}")
+            print("語法錯誤，使用：jump <行數>")
+        except IndexError:
+            print("行數超出範圍")
+            print("語法錯誤，使用：jump <行數>")
+        except Exception as e:
+            print(f"發生錯誤: {e}")
+            return True
+        return True
+    
 
     def run(self):
         print("=== 磁場模擬控制器 ===")

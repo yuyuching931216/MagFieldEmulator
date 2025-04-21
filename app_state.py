@@ -1,4 +1,5 @@
 import threading
+from typing import Optional
 
 class AppState:
     def __init__(self, interval: float, voltage_limit: float):
@@ -9,6 +10,7 @@ class AppState:
         self._stop = False
         self._current_row = 0
         self._task_active = False
+        self._skipped_row = 0
 
     @property
     def paused(self) -> bool:
@@ -69,3 +71,13 @@ class AppState:
     def task_active(self, value: bool):
         with self._lock:
             self._task_active = value
+            
+    @property
+    def skipped_row(self) -> Optional[int]:
+        with self._lock:
+            return self._skipped_rowi
+        
+    @skipped_row.setter
+    def skipped_row(self, value: Optional[int]):
+        with self._lock:
+            self._skipped_row = value

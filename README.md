@@ -1,49 +1,117 @@
-# MegFieldEmulator
+# Magnetic Field Controller
 
-A real-time magnetic field emulator that uses STK-exported geomagnetic data to drive a 3-axis magnetic simulation platform via NI DAQ + CU1 + Helmholtz coils.
+A versatile controller that reads magnetic field data from text files and outputs corresponding analog voltage signals through a DAQ (Data Acquisition) device. This program supports real-time control, status monitoring, and comprehensive logging.
 
-## 🔧 Features
+## Features
 
-- Load ASCII magnetic field data from STK (nT)
-- Real-time voltage output using NI USB-6383 AO
-- CLI-based live control: pause, resume, change output interval, limit voltage
-- Safe logging of output process
-- Tab auto-completion for commands
+- Reads magnetic field data (nT) from text files
+- Converts magnetic field values to voltage signals (V)
+- Real-time control through a command-line interface
+- Pause/resume functionality
+- Adjustable output interval and voltage limits
+- Detailed status monitoring
+- Comprehensive logging
 
-## 📦 Requirements
+## Requirements
 
-- Windows
-- NI DAQmx driver installed
-- Python 3.8+
-- Dependencies:
+- Python 3.6+
+- DAQ device with NI-DAQmx drivers installed
 
-```bash
-pip install pandas nidaqmx
-```
+## Installation
 
-## 🚀 Usage
+1. Clone this repository
 
 ```bash
-python real_time_controller.py
+git clone https://github.com/username/magnetic-field-controller.git
+cd magnetic-field-controller
 ```
 
-Then use CLI commands like:
+2. Install dependencies
 
-```
-pause
-resume
-set interval 30
-set voltage limit 5
-status
-stop
+```bash
+pip install -r requirements.txt
 ```
 
-## 📁 File Structure
+## Project Structure
 
-- `real_time_controller.py`: Main logic
-- `data/`: STK magnetic field data input folder
-- `output_log.csv`: Simulation output record
+```
+magnetic_field_controller/
+│── app_config.py     # AppConfig class
+├── app_state.py      # AppState class
+│── log_manager.py    # LogManager class
+│── data_loader.py    # DataLoader class
+|── daq_controller.py # DAQController class
+│── command_interface.py # Command processing
+├── main.py               # Main entry point
+└── requirements.txt      # Project dependencies
+```
 
-## 📌 License
+## Configuration
 
-For internal research use in magnetics and satellite field simulation.
+The program uses a `config.json` file for configuration. A default configuration file will be automatically generated on first run, which you can modify as needed.
+
+Configuration parameters:
+
+| Parameter | Description | Default Value |
+|-----------|-------------|---------------|
+| `csv_input` | Input magnetic field data filename | `"None"` |
+| `csv_folder` | Data file directory | `"data"` |
+| `csv_log` | Output log file | `"output_log.csv"` |
+| `device_name` | DAQ device name | `"Dev1"` |
+| `nt_to_volt` | Conversion ratio from nanoTesla to Volts | `0.0001` |
+| `interval` | Output interval (seconds) | `60.0` |
+| `voltage_limit` | Maximum output voltage (±V) | `10.0` |
+| `log_flush_interval` | Log buffer write interval (entries) | `10` |
+
+## Usage
+
+1. Make sure your magnetic field data file is placed in the configured data directory
+2. Connect your DAQ device
+3. Run the program:
+
+```bash
+python main.py
+```
+
+4. The program will initialize the DAQ device and start outputting voltage signals according to the data file
+
+## Available Commands
+
+While the program is running, you can use the following commands:
+
+- `pause`: Pause the output
+- `resume`: Resume the output
+- `set interval <seconds>`: Set the output interval
+- `set voltage limit <V>`: Set the maximum voltage limit(Can't larger than 10V)
+- `status`: Display current status
+- `save config`: Save current settings to config file
+- `stop`: Stop the program
+- `help`: Display available commands
+
+## Log Output
+
+The program records detailed logs in CSV format including:
+
+- UTC and local timestamps
+- Magnetic field values (Bx, By, Bz in nT)
+- Output voltage values (Vx, Vy, Vz)
+- Success status of voltage output
+
+## Error Handling
+
+The program includes comprehensive error handling for:
+- DAQ device connection issues
+- Data file loading problems
+- Invalid command inputs
+- Voltage output failures
+
+## Future Improvements
+
+- Graphical user interface
+- Remote control capability
+- Real-time visualization of magnetic field data
+- Support for additional data formats
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
