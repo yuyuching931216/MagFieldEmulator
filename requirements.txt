@@ -1,2 +1,2 @@
-pandas
-nidaqmx
+pandas>=1.0.0
+nidaqmx>=0.6.0

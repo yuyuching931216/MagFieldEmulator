@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 output_log.csv
 data/*
+!data/.gitkeep
+config.json
+test.py

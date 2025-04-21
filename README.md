@@ -41,7 +41,7 @@ stop
 ## 📁 File Structure
 
 - `real_time_controller.py`: Main logic
-- `600 Meg.txt`: STK magnetic field data input
+- `data/`: STK magnetic field data input folder
 - `output_log.csv`: Simulation output record
 
 ## 📌 License
