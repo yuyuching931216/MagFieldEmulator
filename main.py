@@ -21,9 +21,8 @@ class MagneticFieldController:
         self.config = self._load_config()
         self.state = AppState(self.config.interval, self.MAX_VOLTAGE)
         self.log_manager = LogManager(self.config.csv_log, self.config.log_flush_interval)
-        self.ao_channels = [f"{self.config.device_name}/ao{i}" for i in range(3)]
         self.command_interface = CommandInterface()
-        
+        self.ao_channels = [f"{self.config.device_name}/ao{i}" for i in (3, 2, 1, 0)]
         # 設置指令處理器
         self._register_commands()
         
@@ -137,8 +136,10 @@ class MagneticFieldController:
                 vy = max(min(row.By * self.config.nt_to_volt, self.state.voltage_limit), -self.state.voltage_limit)
                 vz = max(min(row.Bz * self.config.nt_to_volt, self.state.voltage_limit), -self.state.voltage_limit)
 
+                output_voltages = [vx/2, vy/2, vz/2, 5]
+
                 # 輸出電壓
-                voltage_output_success = daq.write_voltages([vx, vy, vz])
+                voltage_output_success = daq.write_voltages(output_voltages)
                 
                 now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
                 local_time = datetime.now().replace(microsecond=0).isoformat()
