@@ -89,7 +89,7 @@ class MagneticFieldController:
         self.state.stop = True
         print("\n正在安全停止程式...")
         # 等待任務完成
-        while self.state.task_active:
+        if self.state.task_active:
             print("等待DAQ任務結束...")
             time.sleep(1)
         # 最後一次寫入日誌
