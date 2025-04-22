@@ -6,7 +6,7 @@ class AppState:
         self._lock = threading.RLock()
         self._paused = False
         self._interval = interval
-        self.__voltage_limit = voltage_limit
+        self._voltage_limit = voltage_limit
         self._stop = False
         self._current_row = 0
         self._task_active = False
@@ -70,7 +70,7 @@ class AppState:
     @property
     def skipped_row(self) -> Optional[int]:
         with self._lock:
-            return self._skipped_rowi
+            return self._skipped_row
         
     @skipped_row.setter
     def skipped_row(self, value: Optional[int]):
