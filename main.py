@@ -19,7 +19,7 @@ class MagneticFieldController:
     def __init__(self):
         self.MAX_VOLTAGE = 10.0  # 最大電壓 ±10V
         self.config = self._load_config()
-        self.state = AppState(self.config.interval, self.config.voltage_limit)
+        self.state = AppState(self.config.interval, self.MAX_VOLTAGE)
         self.log_manager = LogManager(self.config.csv_log, self.config.log_flush_interval)
         self.ao_channels = [f"{self.config.device_name}/ao{i}" for i in range(3)]
         self.command_interface = CommandInterface()
@@ -42,12 +42,11 @@ class MagneticFieldController:
         self.command_interface.register_command("pause", lambda _: self._cmd_pause(), "暫停輸出")
         self.command_interface.register_command("resume", lambda _: self._cmd_resume(), "恢復輸出")
         self.command_interface.register_command("set interval", self._cmd_set_interval, "設定輸出間隔，用法: set interval <秒>")
-        self.command_interface.register_command("set voltage limit", self._cmd_set_voltage_limit, "設定電壓限制，用法: set voltage limit <V>")
         self.command_interface.register_command("status", lambda _: self._cmd_status(), "顯示目前狀態")
         self.command_interface.register_command("save config", lambda _: self._cmd_save_config(), "保存當前設定")
         self.command_interface.register_command("stop", lambda _: self._cmd_stop(), "停止程式")
         self.command_interface.register_command("help", lambda _: self.command_interface.show_help(), "顯示此幫助")
-        self.command_interface.register_command("jump", self._cmd_jump(), "跳至指定行數", "用法: jump <行數>")
+        self.command_interface.register_command("jump", self._cmd_jump, "跳至指定行數，用法: jump <行數>")
 
     @staticmethod
     def _load_config() -> AppConfig:
@@ -73,7 +72,6 @@ class MagneticFieldController:
             config_data = {
                 **self.config.to_dict(),
                 "interval": self.state.interval,
-                "voltage_limit": self.state.voltage_limit
             }
             with open("config.json", 'w', encoding='utf-8') as f:
                 json.dump(config_data, f, indent=2, ensure_ascii=False)
@@ -99,6 +97,12 @@ class MagneticFieldController:
         print("程式已安全停止。")
 
     def output_loop(self):
+        @self.state.with_lock
+        def skip_function():    
+            if self.state.skipped_row is not None:
+                self.state.current_row = self.state.skipped_row
+                self.state.skipped_row = None
+
         rows_processed = 0
         
         with DAQController(self.config.device_name, self.ao_channels) as daq:
@@ -112,11 +116,8 @@ class MagneticFieldController:
             
             self.state.current_row = 0
             while self.state.current_row < len(self.dataframe):
-                    
-                if self.state.skipped_row is not None:
-                    self.state.current_row = self.state.skipped_row
-                    self.state.skipped_row = None
-                
+
+                skip_function() 
                 row = self.dataframe.iloc[self.state.current_row]
                 
                 if self.state.stop:
@@ -204,25 +205,6 @@ class MagneticFieldController:
         except ValueError as e:
             print(f"無效的數值: {e}")
             print("語法錯誤，使用：set interval <秒>")
-        return True
-        
-    def _cmd_set_voltage_limit(self, cmd: str) -> bool:
-        try:
-            parts = cmd.split()
-            if len(parts) != 4:
-                raise ValueError("參數數量錯誤")
-                
-            val = float(parts[3])
-            if val <= 0:
-                print("電壓限制必須大於0伏特")
-            elif val > self.MAX_VOLTAGE:
-                print(f"電壓限制不能超過 ±{self.MAX_VOLTAGE} V")
-            else:
-                self.state.voltage_limit = val
-                print(f"電壓上限已設為 ±{val} V。")
-        except ValueError as e:
-            print(f"無效的數值: {e}")
-            print("語法錯誤，使用：set voltage limit <V>")
         return True
         
     def _cmd_status(self) -> bool:
