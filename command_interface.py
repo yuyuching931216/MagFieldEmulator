@@ -1,4 +1,7 @@
-import readline
+try:
+    import readline
+except ImportError:
+    import pyreadline3 as readline
 from typing import Callable, Dict
 
 class CommandInterface:

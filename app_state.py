@@ -3,10 +3,10 @@ from typing import Optional
 
 class AppState:
     def __init__(self, interval: float, voltage_limit: float):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._paused = False
         self._interval = interval
-        self._voltage_limit = voltage_limit
+        self.__voltage_limit = voltage_limit
         self._stop = False
         self._current_row = 0
         self._task_active = False
@@ -36,11 +36,6 @@ class AppState:
     def voltage_limit(self) -> float:
         with self._lock:
             return self._voltage_limit
-
-    @voltage_limit.setter
-    def voltage_limit(self, value: float):
-        with self._lock:
-            self._voltage_limit = value
 
     @property
     def stop(self) -> bool:
@@ -81,3 +76,10 @@ class AppState:
     def skipped_row(self, value: Optional[int]):
         with self._lock:
             self._skipped_row = value
+
+    def with_lock(self, func):
+        """Decorator to acquire and release the lock around a function."""
+        def wrapper(*args, **kwargs):
+            with self._lock:
+                return func(*args, **kwargs)
+        return wrapper
