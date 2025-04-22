@@ -22,8 +22,8 @@ A versatile controller that reads magnetic field data from text files and output
 1. Clone this repository
 
 ```bash
-git clone https://github.com/username/magnetic-field-controller.git
-cd magnetic-field-controller
+git clone https://github.com/yuyuching931216/MegFieldEmulator.git
+cd MegFieldEmulator
 ```
 
 2. Install dependencies
@@ -43,7 +43,9 @@ magnetic_field_controller/
 |── daq_controller.py # DAQController class
 │── command_interface.py # Command processing
 ├── main.py               # Main entry point
-└── requirements.txt      # Project dependencies
+|── requirements.txt      # Project dependencies
+└──data
+    └──inputdata.csv    #input megnet data
 ```
 
 ## Configuration
@@ -60,7 +62,6 @@ Configuration parameters:
 | `device_name` | DAQ device name | `"Dev1"` |
 | `nt_to_volt` | Conversion ratio from nanoTesla to Volts | `0.0001` |
 | `interval` | Output interval (seconds) | `60.0` |
-| `voltage_limit` | Maximum output voltage (±V) | `10.0` |
 | `log_flush_interval` | Log buffer write interval (entries) | `10` |
 
 ## Usage
@@ -82,7 +83,7 @@ While the program is running, you can use the following commands:
 - `pause`: Pause the output
 - `resume`: Resume the output
 - `set interval <seconds>`: Set the output interval
-- `set voltage limit <V>`: Set the maximum voltage limit(Can't larger than 10V)
+- `jump <row>`: Jump to the row you want
 - `status`: Display current status
 - `save config`: Save current settings to config file
 - `stop`: Stop the program
@@ -111,7 +112,3 @@ The program includes comprehensive error handling for:
 - Remote control capability
 - Real-time visualization of magnetic field data
 - Support for additional data formats
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
