@@ -18,19 +18,14 @@ from command_interface import CommandInterface
 class MagneticFieldController:
     def __init__(self):
         self.MAX_VOLTAGE = 10.0  # 最大電壓 ±10V
+        self.base_path = os.path.dirname(os.path.abspath(__file__))
         self.config = self._load_config()
         self.state = AppState(self.config.interval, self.MAX_VOLTAGE)
-        self.log_manager = LogManager(self.config.csv_log, self.config.log_flush_interval)
+        self.log_manager = LogManager(os.path.join(self.base_path, self.config.csv_log), self.config.log_flush_interval)
         self.command_interface = CommandInterface()
         self.ao_channels = [f"{self.config.device_name}/ao{i}" for i in (3, 2, 1, 0)]
         # 設置指令處理器
         self._register_commands()
-        
-        # 載入磁場數據
-        data_path = os.path.join(self.config.csv_folder, self.config.csv_input)
-        self.dataframe = DataLoader.load_data(data_path)
-        if self.dataframe is None:
-            sys.exit(1)
 
         # 設置信號處理
         signal.signal(signal.SIGINT, self.signal_handler)
@@ -47,9 +42,8 @@ class MagneticFieldController:
         self.command_interface.register_command("help", lambda _: self.command_interface.show_help(), "顯示此幫助")
         self.command_interface.register_command("jump", self._cmd_jump, "跳至指定行數，用法: jump <行數>")
 
-    @staticmethod
-    def _load_config() -> AppConfig:
-        config_file = "config.json"
+    def _load_config(self) -> AppConfig:
+        config_file = os.path.join(self.base_path, "config.json")
         default_config = AppConfig()
         
         try:
@@ -68,11 +62,12 @@ class MagneticFieldController:
 
     def save_config(self) -> bool:
         try:
+            path = os.path.join(self.base_path, "config.json")
             config_data = {
                 **self.config.to_dict(),
                 "interval": self.state.interval,
             }
-            with open("config.json", 'w', encoding='utf-8') as f:
+            with open(path, 'w', encoding='utf-8') as f:
                 json.dump(config_data, f, indent=2, ensure_ascii=False)
             return True
         except Exception as e:
@@ -83,6 +78,36 @@ class MagneticFieldController:
         print(f"\n收到信號 {sig}，準備安全退出...")
         self.safe_stop()
         sys.exit(0)
+
+    def _choose_file(self):
+        data_path = os.path.join(self.base_path, self.config.csv_folder)
+        files = [f for f in os.listdir(data_path) if f != '.gitkeep']
+        if not files:
+            print("錯誤：資料夾為空")
+            sys.exit(1)
+        print("請選擇要載入的磁場資料檔案：")
+        for i, file in enumerate(files):
+            print(f"{i}: {file}")
+        try:
+            choice = int(input("請輸入檔案編號："))
+            if 0 <= choice < len(files):
+                file_path = os.path.join(data_path, files[choice])
+                self.dataframe = DataLoader.load_data(file_path)
+                if self.dataframe is None:
+                    print("錯誤：載入資料失敗")
+                    sys.exit(1)
+            else:
+                print("錯誤：無效的選擇")
+                sys.exit(1)
+        except ValueError:
+            print("錯誤：請輸入有效的數字")
+            sys.exit(1)
+        except IndexError:
+            print("錯誤：選擇的檔案不存在")
+            sys.exit(1)
+        except Exception as e:
+            print(f"錯誤：載入資料時發生錯誤: {e}")
+            sys.exit(1)
 
     def safe_stop(self):
         self.state.stop = True
@@ -254,6 +279,7 @@ class MagneticFieldController:
 
     def run(self):
         print("=== 磁場模擬控制器 ===")
+        self._choose_file()
         output_thread = threading.Thread(target=self.output_loop, daemon=True)
         output_thread.start()
 
