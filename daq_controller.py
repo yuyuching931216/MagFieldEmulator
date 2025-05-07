@@ -6,6 +6,7 @@ class DAQController:
     def __init__(self, device_name: str, channels: List[str]):
         self.device_name = device_name
         self.channels = channels
+        self.p0_channel = [f'port0/line{i}' for i in range(8, 32)]
         self.task = None
 
     def __enter__(self):
@@ -23,9 +24,14 @@ class DAQController:
                 return False
 
             self.task = nidaqmx.Task()
+            
             for ch in self.channels:
-                self.task.ao_channels.add_ao_voltage_chan(ch)
+                self.task.ao_channels.add_ao_voltage_chan(ch, max_val=10.0, min_val=-10.0)
+
+            for ch in self.p0_channel:
+                self.task.di_channels.add_di_chan('{self.device_name}/{ch}')
             return True
+        
         except Exception as e:
             print(f"初始化DAQ任務時發生錯誤: {e}")
             traceback.print_exc()
@@ -36,7 +42,7 @@ class DAQController:
             return False
 
         try:
-            self.task.write(voltages)
+            self.task.write(voltages, auto_start=True)
             return True
         except Exception as e:
             print(f"輸出電壓時發生錯誤: {e}")
