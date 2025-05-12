@@ -6,8 +6,9 @@ class DAQController:
     def __init__(self, device_name: str, channels: List[str]):
         self.device_name = device_name
         self.ao_channels = channels
-        self.do_channel = [f'port0/line{i}' for i in range(8, 32)]
+        self.do_channels = [f'port0/line{i}' for i in range(8, 32)]
         self.ao_task = None
+        self.do_task = None
 
     def __enter__(self):
         self.initialize()
@@ -29,7 +30,7 @@ class DAQController:
             for ch in self.ao_channels:
                 self.ao_task.ao_channels.add_ao_voltage_chan(ch, max_val=10.0, min_val=-10.0)
 
-            for ch in self.do__channel:
+            for ch in self.do_channels:
                 self.do_task.do_channels.add_do_chan('{self.device_name}/{ch}')
 
             self.do_task.write([True] * len(self.do_channels), auto_start=True)
