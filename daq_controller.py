@@ -30,9 +30,10 @@ class DAQController:
                 self.ao_task.ao_channels.add_ao_voltage_chan(ch, max_val=10.0, min_val=-10.0)
 
             for ch in self.do__channel:
-                self.ao_task.do_channels.add_do_chan('{self.device_name}/{ch}')
-                
-            self.ao_task.write([5.0] * len(self.ao_channels), auto_start=True)
+                self.do_task.do_channels.add_do_chan('{self.device_name}/{ch}')
+
+            self.do_task.write([True] * len(self.do_channels), auto_start=True)
+
             return True
         
         except Exception as e:
