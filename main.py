@@ -23,7 +23,9 @@ class MagneticFieldController:
         self.state = AppState(self.config.interval, self.MAX_VOLTAGE)
         self.log_manager = LogManager(os.path.join(self.base_path, self.config.csv_log), self.config.log_flush_interval)
         self.command_interface = CommandInterface()
-        self.ao_channels = [f"{self.config.device_name}/ao{i}" for i in (3, 2, 1, 0)]
+        self.channels = {"ao": [f"{self.config.device_name}/ao{i}" for i in (3, 2, 1, 0)],
+                         "do": [f"{self.config.device_name}/port0/line{i}" for i in range(8,32)],
+                         "ai": [f"{self.config.device_name}/ai{i}" for i in range(19, 22)]}
         # 設置指令處理器
         self._register_commands()
 
@@ -129,13 +131,14 @@ class MagneticFieldController:
 
         rows_processed = 0
         
-        with DAQController(self.config.device_name, self.ao_channels) as daq:
-            if not daq.task:
+        with DAQController(self.config.device_name, self.channels) as daq:
+            if not daq.ao_task:
                 print("DAQ初始化失敗，終止輸出線程")
                 return
 
             self.state.task_active = True
-            
+            daq.write_digital([True] * len(self.channels.get('do', [])))  # 設定數位輸出為高電平
+
             print("DAQ任務已初始化，開始輸出...")
             
             self.state.current_row = 0
@@ -166,12 +169,23 @@ class MagneticFieldController:
                 # 輸出電壓
                 voltage_output_success = daq.write_voltages(output_voltages)
                 
+
                 now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
                 local_time = datetime.now().replace(microsecond=0).isoformat()
 
-                # 顯示本地時間和UTC時間
+                # 輸出結果
                 print(f"[{local_time}] 輸出 B(nT)=({row.Bx:.1f}, {row.By:.1f}, {row.Bz:.1f}) → V=({vx:.4f}, {vy:.4f}, {vz:.4f}) {'✓' if voltage_output_success else '✗'}")
 
+                # 讀取類比信號
+                analog_data = daq.read_analog()
+                if analog_data is not None:
+                    print(f"讀取類比信號", end=': ')
+                    for data, input in analog_data, [vx, vy, vz]:
+                        print(f'x={data}, 差距{data - input}', end='; ')
+                    print('')
+                else:
+                    print("讀取類比信號失敗")
+                
                 # 記錄 log
                 self.log_manager.add_entry({
                     "index": self.state.current_row,	

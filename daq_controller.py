@@ -1,15 +1,16 @@
 import nidaqmx
+from nidaqmx.constants import READ_ALL_AVAILABLE
 import traceback
 from typing import List
 
 class DAQController:
-    def __init__(self, device_name: str, channels: List[str]):
+    def __init__(self, device_name: str, channels: dict[str, List[str]]):
         self.device_name = device_name
-        self.ao_channels = channels
-        self.do_channels = [f'port0/line{i}' for i in range(8, 32)]
         self.ao_task = None
         self.do_task = None
-
+        self.ai_task = None
+        self.channels = channels
+    
     def __enter__(self):
         self.initialize()
         return self
@@ -26,15 +27,16 @@ class DAQController:
 
             self.ao_task = nidaqmx.Task()
             self.do_task = nidaqmx.Task()
+            self.ai_task = nidaqmx.Task()
 
-            for ch in self.ao_channels:
+            for ch in self.channels.get('ao', []):
                 self.ao_task.ao_channels.add_ao_voltage_chan(ch, max_val=10.0, min_val=-10.0)
 
-            for ch in self.do_channels:
-                self.do_task.do_channels.add_do_chan('{self.device_name}/{ch}')
+            for ch in self.channels.get('do', []):
+                self.do_task.do_channels.add_do_chan(ch)
 
-            self.do_task.write([True] * len(self.do_channels), auto_start=True)
-
+            for ch in self.channels.get('ai', []):
+                self.ai_task.ai_channels.add_ai_voltage_chan(ch, max_val=10.0, min_val=-10.0)
             return True
         
         except Exception as e:
@@ -53,6 +55,28 @@ class DAQController:
             print(f"輸出電壓時發生錯誤: {e}")
             traceback.print_exc()
             return False
+
+    def write_digital(self, data: List[int]) -> bool:
+        if not self.do_task:
+            return False
+        try:
+            self.do_task.write(data, auto_start=True)
+            return True
+        except Exception as e:
+            print(f"輸出數位信號時發生錯誤: {e}")
+            traceback.print_exc()
+            return False
+        
+    def read_analog(self) -> List[float]:
+        if not self.ai_task:
+            return None
+        try:
+            data = self.ai_task.read(READ_ALL_AVAILABLE)
+            return data
+        except Exception as e:
+            print(f"讀取類比信號時發生錯誤: {e}")
+            traceback.print_exc()
+            return None
 
     def close(self):
         if self.ao_task:
