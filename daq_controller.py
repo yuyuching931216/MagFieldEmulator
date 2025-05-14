@@ -1,4 +1,5 @@
 import nidaqmx
+from nidaqmx.constants import TerminalConfiguration
 import traceback
 from typing import List
 
@@ -35,7 +36,8 @@ class DAQController:
                 self.do_task.do_channels.add_do_chan(ch)
 
             for ch in self.channels.get('ai', []):
-                self.ai_task.ai_channels.add_ai_voltage_chan(ch, max_val=10.0, min_val=-10.0)
+                self.ai_task.ai_channels.add_ai_voltage_chan(ch, max_val=10.0, min_val=-10.0, 
+                                                             terminal_config=TerminalConfiguration.NRSE)
 
             self.ai_task.start()
             return True

@@ -189,7 +189,7 @@ class MagneticFieldController:
                         data = analog_data[i]
                         input = (vx, vy, vz)[i]
                         name = ['Bx', 'By', 'Bz'][i]
-                        print(f'{name}={data}, 差距{data - input}', end='; ')
+                        print(f'{name}={data:.4f}, 差距{(data - input):.4f}', end='; ')
                     print('')
                 else:
                     print("讀取類比信號失敗")
