@@ -18,7 +18,7 @@ from command_interface import CommandInterface
 class MagneticFieldController:
     def __init__(self):
         self.MAX_VOLTAGE = 10.0  # 最大電壓 ±10V
-        self.voltage_multiplier = (1.0, 1.0, 1.0, 1.0)  # 電壓乘數
+        self.voltage_multiplier = (1.0, 1.0, 1.0)  # 電壓乘數
         self.base_path = os.path.dirname(os.path.abspath(__file__))
         self.config = self._load_config()
         self.state = AppState(self.config.interval)
@@ -161,16 +161,16 @@ class MagneticFieldController:
                 start_time = time.perf_counter()
                     
                 # 計算電壓（限制最大電壓）
-                vx = row.Bx * self.config.nt_to_volt
-                vy = row.By * self.config.nt_to_volt
-                vz = row.Bz * self.config.nt_to_volt
-
-                output_voltages = [vx/2, vy/2, vz/2, 5] * self.voltage_multiplier
+                vx = row.Bx * self.config.nt_to_volt * self.voltage_multiplier[0] / 2
+                vy = row.By * self.config.nt_to_volt * self.voltage_multiplier[1] / 2
+                vz = row.Bz * self.config.nt_to_volt * self.voltage_multiplier[2] / 2
 
                 vx = max(min(vx, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
                 vy = max(min(vy, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
                 vz = max(min(vz, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
-                
+
+                output_voltages = [vx, vy, vz, 5]
+
                 # 輸出電壓
                 voltage_output_success = daq.write_voltages(output_voltages)
                 
