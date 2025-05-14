@@ -1,5 +1,4 @@
 import nidaqmx
-from nidaqmx.constants import READ_ALL_AVAILABLE
 import traceback
 from typing import List
 
@@ -73,7 +72,7 @@ class DAQController:
         if not self.ai_task:
             return None
         try:
-            data = self.ai_task.read(READ_ALL_AVAILABLE)
+            data = self.ai_task.read()
             return data
         except Exception as e:
             print(f"讀取類比信號時發生錯誤: {e}")

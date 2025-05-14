@@ -185,8 +185,11 @@ class MagneticFieldController:
                 analog_data = daq.read_analog()
                 if analog_data is not None:
                     print(f"讀取類比信號", end=': ')
-                    for data, input in analog_data, [vx, vy, vz]:
-                        print(f'x={data}, 差距{data - input}', end='; ')
+                    for i in range(len(analog_data)):
+                        data = analog_data[i]
+                        input = (vx, vy, vz)[i]
+                        name = ['Bx', 'By', 'Bz'][i]
+                        print(f'{name}={data}, 差距{data - input}', end='; ')
                     print('')
                 else:
                     print("讀取類比信號失敗")
