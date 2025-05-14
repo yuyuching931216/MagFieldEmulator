@@ -2,11 +2,10 @@ import threading
 from typing import Optional
 
 class AppState:
-    def __init__(self, interval: float, voltage_limit: float):
+    def __init__(self, interval: float):
         self._lock = threading.RLock()
         self._paused = False
         self._interval = interval
-        self._voltage_limit = voltage_limit
         self._stop = False
         self._current_row = 0
         self._task_active = False
@@ -31,11 +30,6 @@ class AppState:
     def interval(self, value: float):
         with self._lock:
             self._interval = value
-
-    @property
-    def voltage_limit(self) -> float:
-        with self._lock:
-            return self._voltage_limit
 
     @property
     def stop(self) -> bool:

@@ -18,9 +18,10 @@ from command_interface import CommandInterface
 class MagneticFieldController:
     def __init__(self):
         self.MAX_VOLTAGE = 10.0  # 最大電壓 ±10V
+        self.voltage_multiplier = (1.0, 1.0, 1.0, 1.0)  # 電壓乘數
         self.base_path = os.path.dirname(os.path.abspath(__file__))
         self.config = self._load_config()
-        self.state = AppState(self.config.interval, self.MAX_VOLTAGE)
+        self.state = AppState(self.config.interval)
         self.log_manager = LogManager(os.path.join(self.base_path, self.config.csv_log), self.config.log_flush_interval)
         self.command_interface = CommandInterface()
         self.channels = {"ao": [f"{self.config.device_name}/ao{i}" for i in (3, 2, 1, 0)],
@@ -160,12 +161,16 @@ class MagneticFieldController:
                 start_time = time.perf_counter()
                     
                 # 計算電壓（限制最大電壓）
-                vx = max(min(row.Bx * self.config.nt_to_volt, self.state.voltage_limit), -self.state.voltage_limit)
-                vy = max(min(row.By * self.config.nt_to_volt, self.state.voltage_limit), -self.state.voltage_limit)
-                vz = max(min(row.Bz * self.config.nt_to_volt, self.state.voltage_limit), -self.state.voltage_limit)
+                vx = row.Bx * self.config.nt_to_volt
+                vy = row.By * self.config.nt_to_volt
+                vz = row.Bz * self.config.nt_to_volt
 
-                output_voltages = [vx/2, vy/2, vz/2, 5]
+                output_voltages = [vx/2, vy/2, vz/2, 5] * self.voltage_multiplier
 
+                vx = max(min(vx, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
+                vy = max(min(vy, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
+                vz = max(min(vz, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
+                
                 # 輸出電壓
                 voltage_output_success = daq.write_voltages(output_voltages)
                 
@@ -197,7 +202,8 @@ class MagneticFieldController:
                     "vx": vx,
                     "vy": vy,
                     "vz": vz,
-                    "success": voltage_output_success
+                    "success": voltage_output_success,
+                    "analog_data": analog_data,
                 })
                 
                 self.state.current_row += 1
