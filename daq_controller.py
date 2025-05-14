@@ -38,7 +38,6 @@ class DAQController:
             for ch in self.channels.get('ai', []):
                 self.ai_task.ai_channels.add_ai_voltage_chan(ch, max_val=10.0, min_val=-10.0)
 
-            self.ai_task.timing.cfg_samp_clk_timing(rate=1000, sample_mode=nidaqmx.constants.AcquisitionType.FiniteSamples, samps_per_chan=1000)
             self.ai_task.start()
             return True
         
