@@ -44,7 +44,7 @@ magnetic_field_controller/
 │── command_interface.py # Command processing
 ├── main.py               # Main entry point
 |── requirements.txt      # Project dependencies
-└──data
+└──data/
     └──inputdata.csv    #input megnet data
 ```
 
