@@ -179,7 +179,7 @@ class MagneticFieldController:
                 vy = max(min(vy, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
                 vz = max(min(vz, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
 
-                output_voltages = [vx, vy, vz, 5]
+                output_voltages = [-vy, -vx, -vz, 12]
 
                 # 輸出電壓
                 voltage_output_success = daq.write_voltages(output_voltages)
