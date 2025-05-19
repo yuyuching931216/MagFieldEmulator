@@ -14,6 +14,7 @@ from log_manager import LogManager
 from data_loader import DataLoader
 from daq_controller import DAQController
 from command_interface import CommandInterface
+from sklearn.linear_model import LinearRegression
 
 class MagneticFieldController:
     def __init__(self):
@@ -44,6 +45,11 @@ class MagneticFieldController:
         self.command_interface.register_command("stop", lambda _: self._cmd_stop(), "停止程式")
         self.command_interface.register_command("help", lambda _: self.command_interface.show_help(), "顯示此幫助")
         self.command_interface.register_command("jump", self._cmd_jump, "跳至指定行數，用法: jump <行數>")
+        self.calibrators = {
+            "x": {"model": LinearRegression(), "X": [], "y": []},
+            "y": {"model": LinearRegression(), "X": [], "y": []},
+            "z": {"model": LinearRegression(), "X": [], "y": []},
+        }
 
     def _load_config(self) -> AppConfig:
         config_file = os.path.join(self.base_path, "config.json")
@@ -132,8 +138,8 @@ class MagneticFieldController:
 
         rows_processed = 0
         # 儲存每軸的過去誤差，用來進行簡單校準
-        error_history = {"x": [], "y": [], "z": []}
-        MAX_HISTORY = 10  # 使用最近10筆誤差做平均
+        #error_history = {"x": [], "y": [], "z": []}
+        #MAX_HISTORY = 10  # 使用最近10筆誤差做平均
 
 
         with DAQController(self.config.device_name, self.channels) as daq:
@@ -190,33 +196,43 @@ class MagneticFieldController:
                 if analog_data is not None:
                     print(f"讀取類比信號", end=': ')
                     for i in range(len(analog_data)):
-                        data = analog_data[i]
-                        input = (vx, vy, vz)[i]
-                        name = ['Bx', 'By', 'Bz'][i]
-                        print(f'{name}={data:.4f}, 差距{(data - input):.4f}', end='; ')
-                    print('')
-                    # 🔧 補償邏輯放這裡
-                    for i, axis in enumerate(["x", "y", "z"]):
                         measured = analog_data[i]
-                        expected = (vx, vy, vz)[i]
-                        error = measured - expected
-                        error_history[axis].append(error)
+                        expected = output_voltages[i]
+                        axis = ['x', 'y', 'z'][i] if i < 3 else 'other'
+                        print(f'{axis.upper()}={measured:.4f}, 差距{(measured - expected):.4f}', end='; ')
 
-                        if len(error_history[axis]) > MAX_HISTORY:
-                            error_history[axis].pop(0)
+                        # 儲存資料進入訓練集
+                        if axis in self.calibrators:
+                            self.calibrators[axis]["X"].append([expected])
+                            self.calibrators[axis]["y"].append(measured)
 
-                        avg_error = sum(error_history[axis]) / len(error_history[axis])
-                        
-                        # 根據平均誤差進行補償
-                        if axis == "x":
-                            vx -= avg_error
-                        elif axis == "y":
-                            vy -= avg_error
-                        elif axis == "z":
-                            vz -= avg_error
+                            # 若樣本數足夠就訓練校準模型
+                            if len(self.calibrators[axis]["X"]) >= 10:
+                                model = self.calibrators[axis]["model"]
+                                model.fit(self.calibrators[axis]["X"], self.calibrators[axis]["y"])
+                    print('')
                 else:
                     print("讀取類比信號失敗")
-                
+
+                # 重新用模型校準下一次輸出
+                for i, axis in enumerate(["x", "y", "z"]):
+                    model = self.calibrators[axis]["model"]
+                    if len(self.calibrators[axis]["X"]) >= 10:
+                        predicted_input = (vx, vy, vz)[i]
+                        # 計算校正輸出（反推應該給多少電壓才會量到期望值）
+                        try:
+                            coef = model.coef_[0]
+                            intercept = model.intercept_
+                            corrected = (predicted_input - intercept) / coef if coef != 0 else predicted_input
+                        except Exception:
+                            corrected = predicted_input
+                        if axis == "x":
+                            vx = corrected
+                        elif axis == "y":
+                            vy = corrected
+                        elif axis == "z":
+                            vz = corrected
+
                 # 記錄 log
                 self.log_manager.add_entry({
                     "index": self.state.current_row,	
