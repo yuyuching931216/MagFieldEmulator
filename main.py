@@ -227,11 +227,11 @@ class MagneticFieldController:
                         except Exception:
                             corrected = predicted_input
                         if axis == "x":
-                            vx = corrected
+                            vx = corrected/10
                         elif axis == "y":
-                            vy = corrected
+                            vy = corrected/10
                         elif axis == "z":
-                            vz = corrected
+                            vz = corrected/10
 
                 # 記錄 log
                 self.log_manager.add_entry({
