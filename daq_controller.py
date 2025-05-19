@@ -30,7 +30,7 @@ class DAQController:
             self.ai_task = nidaqmx.Task()
 
             for ch in self.channels.get('ao', []):
-                self.ao_task.ao_channels.add_ao_voltage_chan(ch, max_val=10.0, min_val=-10.0)
+                self.ao_task.ao_channels.add_ao_voltage_chan(ch)
 
             for ch in self.channels.get('do', []):
                 self.do_task.do_channels.add_do_chan(ch)
