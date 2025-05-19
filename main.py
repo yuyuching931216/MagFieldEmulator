@@ -187,7 +187,7 @@ class MagneticFieldController:
 
                 # 讀取類比信號
                 analog_data = daq.read_analog()
-                if analog_data is not None
+                if analog_data is not None:
                     # 🔧 補償邏輯放這裡
                     for i, axis in enumerate(["x", "y", "z"]):
                         measured = analog_data[i]
