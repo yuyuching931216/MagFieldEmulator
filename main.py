@@ -173,7 +173,7 @@ class MagneticFieldController:
                 vy = max(min(vy, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
                 vz = max(min(vz, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
 
-                output_voltages = [vx, vy, vz, 5]
+                output_voltages = [-vy, -vx, -vz, 12]
 
                 # 輸出電壓
                 voltage_output_success = daq.write_voltages(output_voltages)
@@ -187,18 +187,11 @@ class MagneticFieldController:
 
                 # 讀取類比信號
                 analog_data = daq.read_analog()
-                if analog_data is not None:
-                    print(f"讀取類比信號", end=': ')
-                    for i in range(len(analog_data)):
-                        data = analog_data[i]
-                        input = (vx, vy, vz)[i]
-                        name = ['Bx', 'By', 'Bz'][i]
-                        print(f'{name}={data:.4f}, 差距{(data - input):.4f}', end='; ')
-                    print('')
+                if analog_data is not None
                     # 🔧 補償邏輯放這裡
                     for i, axis in enumerate(["x", "y", "z"]):
                         measured = analog_data[i]
-                        expected = (vx, vy, vz)[i]
+                        expected = (-vy, -vz, -vz)[i] * 10
                         error = measured - expected
                         error_history[axis].append(error)
 
@@ -214,6 +207,17 @@ class MagneticFieldController:
                             vy -= avg_error
                         elif axis == "z":
                             vz -= avg_error
+
+                # 讀取類比信號
+                analog_data = daq.read_analog()
+                if analog_data is not None:
+                    print(f"讀取類比信號", end=': ')
+                    for i in range(len(analog_data)):
+                        data = analog_data[i]
+                        input = (vx, vy, vz)[i]
+                        name = ['Bx', 'By', 'Bz'][i]
+                        print(f'{name}={data:.4f}, 差距{(data - input):.4f}', end='; ')
+                    print('')
                 else:
                     print("讀取類比信號失敗")
                 
