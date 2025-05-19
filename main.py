@@ -18,8 +18,7 @@ from command_interface import CommandInterface
 class MagneticFieldController:
     def __init__(self):
         self.MAX_VOLTAGE = 10.0  # 最大電壓 ±10V
-        self.voltage_gain = (1.0, 1.0, 1.0)  # 電壓乘數
-        self.voltage_offset = (0.0, 0.0, 0.0)  # 電壓偏移
+        self.voltage_multiplier = (1.0, 1.0, 1.0)  # 電壓乘數
         self.base_path = os.path.dirname(os.path.abspath(__file__))
         self.config = self._load_config()
         self.state = AppState(self.config.interval)
@@ -132,7 +131,11 @@ class MagneticFieldController:
                 self.state.skipped_row = None
 
         rows_processed = 0
-        
+        # 儲存每軸的過去誤差，用來進行簡單校準
+        error_history = {"x": [], "y": [], "z": []}
+        MAX_HISTORY = 10  # 使用最近10筆誤差做平均
+
+
         with DAQController(self.config.device_name, self.channels) as daq:
             if not daq.ao_task:
                 print("DAQ初始化失敗，終止輸出線程")
@@ -162,14 +165,13 @@ class MagneticFieldController:
                 start_time = time.perf_counter()
                     
                 # 計算電壓（限制最大電壓）
-                vx = row.Bx * self.config.nt_to_volt * self.voltage_gain[0] + self.voltage_offset[0]
-                vy = row.By * self.config.nt_to_volt * self.voltage_gain[1] + self.voltage_offset[1]
-                vz = row.Bz * self.config.nt_to_volt * self.voltage_gain[2] + self.voltage_offset[2]
+                vx = row.Bx * self.config.nt_to_volt * self.voltage_multiplier[0] / 2
+                vy = row.By * self.config.nt_to_volt * self.voltage_multiplier[1] / 2
+                vz = row.Bz * self.config.nt_to_volt * self.voltage_multiplier[2] / 2
 
-
-                vx = max(min(vx, self.MAX_VOLTAGE), -self.MAX_VOLTAGE) / 2
-                vy = max(min(vy, self.MAX_VOLTAGE), -self.MAX_VOLTAGE) / 2
-                vz = max(min(vz, self.MAX_VOLTAGE), -self.MAX_VOLTAGE) / 2
+                vx = max(min(vx, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
+                vy = max(min(vy, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
+                vz = max(min(vz, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
 
                 output_voltages = [vx, vy, vz, 5]
 
@@ -193,6 +195,25 @@ class MagneticFieldController:
                         name = ['Bx', 'By', 'Bz'][i]
                         print(f'{name}={data:.4f}, 差距{(data - input):.4f}', end='; ')
                     print('')
+                    # 🔧 補償邏輯放這裡
+                    for i, axis in enumerate(["x", "y", "z"]):
+                        measured = analog_data[i]
+                        expected = (vx, vy, vz)[i]
+                        error = measured - expected
+                        error_history[axis].append(error)
+
+                        if len(error_history[axis]) > MAX_HISTORY:
+                            error_history[axis].pop(0)
+
+                        avg_error = sum(error_history[axis]) / len(error_history[axis])
+                        
+                        # 根據平均誤差進行補償
+                        if axis == "x":
+                            vx -= avg_error
+                        elif axis == "y":
+                            vy -= avg_error
+                        elif axis == "z":
+                            vz -= avg_error
                 else:
                     print("讀取類比信號失敗")
                 
