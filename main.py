@@ -6,6 +6,7 @@ import signal
 import sys
 from datetime import datetime, timezone
 from typing import List
+from sklearn.linear_model import LinearRegression
 
 # 導入各模組
 from app_config import AppConfig
@@ -14,12 +15,13 @@ from log_manager import LogManager
 from data_loader import DataLoader
 from daq_controller import DAQController
 from command_interface import CommandInterface
-from sklearn.linear_model import LinearRegression
+from testing_data import testing_data
 
 class MagneticFieldController:
     def __init__(self):
         self.MAX_VOLTAGE = 10.0  # 最大電壓 ±10V
-        self.voltage_multiplier = (1.0, 1.0, 1.0)  # 電壓乘數
+        self.voltage_gain = (1.0, 1.0, 1.0)  # 電壓乘數
+        self.voltage_offset = (0.0, 0.0, 0.0)  # 電壓偏移
         self.base_path = os.path.dirname(os.path.abspath(__file__))
         self.config = self._load_config()
         self.state = AppState(self.config.interval)
@@ -136,11 +138,13 @@ class MagneticFieldController:
                 self.state.current_row = self.state.skipped_row
                 self.state.skipped_row = None
 
+        # 誤差調整
+        self.fix_voltage_offset()
+
         rows_processed = 0
         # 儲存每軸的過去誤差，用來進行簡單校準
         #error_history = {"x": [], "y": [], "z": []}
         #MAX_HISTORY = 10  # 使用最近10筆誤差做平均
-
 
         with DAQController(self.config.device_name, self.channels) as daq:
             if not daq.ao_task:
@@ -171,15 +175,15 @@ class MagneticFieldController:
                 start_time = time.perf_counter()
                     
                 # 計算電壓（限制最大電壓）
-                vx = row.Bx * self.config.nt_to_volt * self.voltage_multiplier[0] / 2
-                vy = row.By * self.config.nt_to_volt * self.voltage_multiplier[1] / 2
-                vz = row.Bz * self.config.nt_to_volt * self.voltage_multiplier[2] / 2
+                vx = row.By * self.config.nt_to_volt * self.voltage_gain[0] + self.voltage_offset[0]
+                vy = row.Bx * self.config.nt_to_volt * self.voltage_gain[1] + self.voltage_offset[1]
+                vz = row.Bz * self.config.nt_to_volt * self.voltage_gain[2] + self.voltage_offset[2]
 
-                vx = max(min(vx, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
-                vy = max(min(vy, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
-                vz = max(min(vz, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
+                vx = max(min(vx, self.MAX_VOLTAGE), -self.MAX_VOLTAGE) / -2
+                vy = max(min(vy, self.MAX_VOLTAGE), -self.MAX_VOLTAGE) / -2
+                vz = max(min(vz, self.MAX_VOLTAGE), -self.MAX_VOLTAGE) / -2
 
-                output_voltages = [-vy, -vx, -vz, 12]
+                output_voltages = [vx, vy, vz, 6]
 
                 # 輸出電壓
                 voltage_output_success = daq.write_voltages(output_voltages)
@@ -196,42 +200,14 @@ class MagneticFieldController:
                 if analog_data is not None:
                     print(f"讀取類比信號", end=': ')
                     for i in range(len(analog_data)):
-                        measured = analog_data[i]
+                        measured = analog_data[i] / 10
                         expected = output_voltages[i]
                         axis = ['x', 'y', 'z'][i] if i < 3 else 'other'
                         print(f'{axis.upper()}={measured:.4f}, 差距{(measured - expected):.4f}', end='; ')
 
-                        # 儲存資料進入訓練集
-                        if axis in self.calibrators:
-                            self.calibrators[axis]["X"].append([expected])
-                            self.calibrators[axis]["y"].append(measured)
-
-                            # 若樣本數足夠就訓練校準模型
-                            if len(self.calibrators[axis]["X"]) >= 10:
-                                model = self.calibrators[axis]["model"]
-                                model.fit(self.calibrators[axis]["X"], self.calibrators[axis]["y"])
                     print('')
                 else:
                     print("讀取類比信號失敗")
-
-                # 重新用模型校準下一次輸出
-                for i, axis in enumerate(["x", "y", "z"]):
-                    model = self.calibrators[axis]["model"]
-                    if len(self.calibrators[axis]["X"]) >= 10:
-                        predicted_input = (vx, vy, vz)[i]
-                        # 計算校正輸出（反推應該給多少電壓才會量到期望值）
-                        try:
-                            coef = model.coef_[0]
-                            intercept = model.intercept_
-                            corrected = (predicted_input - intercept) / coef if coef != 0 else predicted_input
-                        except Exception:
-                            corrected = predicted_input
-                        if axis == "x":
-                            vx = corrected/10
-                        elif axis == "y":
-                            vy = corrected/10
-                        elif axis == "z":
-                            vz = corrected/10
 
                 # 記錄 log
                 self.log_manager.add_entry({
@@ -266,6 +242,54 @@ class MagneticFieldController:
 
             self.state.task_active = False
             print("模擬完成，已停止輸出。")
+
+    def fix_voltage_offset(self):
+        """修正電壓偏移"""
+        with DAQController(self.config.device_name, self.channels) as daq:
+            if not daq.ao_task:
+                print("DAQ初始化失敗，終止修正")
+                return
+
+            # 設定數位輸出為高電平
+            daq.write_digital([True] * len(self.channels.get('do', [])))
+            print("開始修正電壓偏移...")
+            for data in testing_data:
+                # 計算電壓（限制最大電壓）
+                vx = data[0] * self.config.nt_to_volt * self.voltage_gain[0] + self.voltage_offset[0]
+                vy = data[1] * self.config.nt_to_volt * self.voltage_gain[1] + self.voltage_offset[1]
+                vz = data[2] * self.config.nt_to_volt * self.voltage_gain[2] + self.voltage_offset[2]
+
+                vx = max(min(vx, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
+                vy = max(min(vy, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
+                vz = max(min(vz, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
+
+                output_voltages = [vx, vy, vz, 6]
+
+                # 輸出電壓
+                daq.write_voltages(output_voltages)
+                time.sleep(0.1)
+                # 讀取類比信號
+                analog_data = daq.read_analog()
+                if analog_data is not None:
+                    for i in range(len(analog_data)):
+                        measured = analog_data[i] / 10
+                        expected = output_voltages[i]
+                        axis = ['x', 'y', 'z'][i] if i < 3 else 'other'
+                        # 記錄數據
+                        self.calibrators[axis]["X"].append(expected)
+                        self.calibrators[axis]["y"].append(measured)
+                    print('')
+            
+            # 訓練線性回歸模型
+            for axis, data in self.calibrators.items():
+                if len(data["X"]) > 0:
+                    X = [[x] for x in data["X"]]
+                    y = data["y"]
+                    model = data["model"]
+                    model.fit(X, y)
+                    print(f"{axis.upper()} 軸的電壓偏移修正係數: {model.coef_[0]:.4f}, 偏移量: {model.intercept_:.4f}")
+                else:
+                    print(f"{axis.upper()} 軸的數據不足，無法訓練模型")
 
     # 指令處理函數
     def _cmd_pause(self) -> bool:
