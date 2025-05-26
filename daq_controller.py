@@ -86,6 +86,8 @@ class DAQController:
                 # 輸出零電壓
                 self.write_voltages([0.0] * len(self.channels))
                 self.ao_task.close()
+                self.ai_task.close()
+                self.do_task.close()
                 print("已重置輸出電壓為零")
             except Exception as e:
                 print(f"關閉DAQ任務時發生錯誤: {e}")
