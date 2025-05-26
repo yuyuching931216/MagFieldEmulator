@@ -20,14 +20,14 @@ from testing_data import testing_data
 class MagneticFieldController:
     def __init__(self):
         self.MAX_VOLTAGE = 10.0  # 最大電壓 ±10V
-        self.voltage_gain = (1.0, 1.0, 1.0)  # 電壓乘數
+        self.voltage_gain = (1.182, 1.18, 1.206)  # 電壓乘數
         self.voltage_offset = (0.0, 0.0, 0.0)  # 電壓偏移
         self.base_path = os.path.dirname(os.path.abspath(__file__))
         self.config = self._load_config()
         self.state = AppState(self.config.interval)
         self.log_manager = LogManager(os.path.join(self.base_path, self.config.csv_log), self.config.log_flush_interval)
         self.command_interface = CommandInterface()
-        self.channels = {"ao": [f"{self.config.device_name}/ao{i}" for i in (3, 2, 1, 0)],
+        self.channels = {"ao": [f"{self.config.device_name}/ao{i}" for i in (2, 3, 1, 0)],
                          "do": [f"{self.config.device_name}/port0/line{i}" for i in range(8,32)],
                          "ai": [f"{self.config.device_name}/ai{i}" for i in range(19, 22)]}
         # 設置指令處理器
@@ -175,8 +175,8 @@ class MagneticFieldController:
                 start_time = time.perf_counter()
                     
                 # 計算電壓（限制最大電壓）
-                vx = row.By * self.config.nt_to_volt * self.voltage_gain[0] + self.voltage_offset[0]
-                vy = row.Bx * self.config.nt_to_volt * self.voltage_gain[1] + self.voltage_offset[1]
+                vx = row.Bx * self.config.nt_to_volt * self.voltage_gain[0] + self.voltage_offset[0]
+                vy = row.By * self.config.nt_to_volt * self.voltage_gain[1] + self.voltage_offset[1]
                 vz = row.Bz * self.config.nt_to_volt * self.voltage_gain[2] + self.voltage_offset[2]
 
                 vx = max(min(vx, self.MAX_VOLTAGE), -self.MAX_VOLTAGE) / -2
@@ -203,7 +203,7 @@ class MagneticFieldController:
                         measured = analog_data[i] / 10
                         expected = output_voltages[i]
                         axis = ['x', 'y', 'z'][i] if i < 3 else 'other'
-                        print(f'{axis.upper()}={measured:.4f}, 差距{(measured - expected):.4f}', end='; ')
+                        print(f'{axis.upper()}={measured:.4f}, 差距{((measured - expected)*100/expected):.4f}%', end='; ')
 
                     print('')
                 else:
@@ -278,7 +278,6 @@ class MagneticFieldController:
                         # 記錄數據
                         self.calibrators[axis]["X"].append(expected)
                         self.calibrators[axis]["y"].append(measured)
-                    print('')
             
             # 訓練線性回歸模型
             for axis, data in self.calibrators.items():
