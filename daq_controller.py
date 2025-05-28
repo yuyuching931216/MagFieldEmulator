@@ -49,10 +49,6 @@ class DAQController:
             for ch in self.channels.get('ai', []):
                 self.ai_task.ai_channels.add_ai_voltage_chan(ch, terminal_config=TerminalConfiguration.NRSE)
 
-            self.ai_task.timing.cfg_samp_clk_timing(self.sample_rate,
-                                                  sample_mode=AcquisitionType.CONTINUOUS,
-                                                  samps_per_chan=self.buffer_size)
-
             self.ai_task.start()
             return True
         

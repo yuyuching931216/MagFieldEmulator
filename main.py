@@ -400,7 +400,7 @@ class MagneticFieldController:
             
             # 最後一次寫入日誌
             self.log_manager.flush()
-            print(f"日誌已保存至：{self.config.csv_log}")
+            print(f"日誌已保存至：{self.config.csv_log_folder}")
 
 if __name__ == "__main__":
     controller = MagneticFieldController()
