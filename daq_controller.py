@@ -1,6 +1,7 @@
 import nidaqmx
 from nidaqmx.constants import TerminalConfiguration, AcquisitionType, RegenerationMode
 from nidaqmx.stream_writers import AnalogMultiChannelWriter
+from nidaqmx.task import Task
 import traceback
 import numpy as np
 from typing import List
@@ -85,9 +86,11 @@ class DAQController:
 
     def _buffer_callback(self, task_handle, event_type, sample_number, callback_data):
         try:
+            temp_task = Task(task_handle)
+
             if self.voltages is not None:
                 samples = np.array([np.full(self.buffer_size, v) for v in self.voltages])
-                writer = AnalogMultiChannelWriter(self.ao_task.out_stream, auto_start=False)
+                writer = AnalogMultiChannelWriter(temp_task.out_stream, auto_start=False)
                 writer.write_many_sample(samples)
         except nidaqmx.errors.DaqError as e:
             print(f"緩衝區回呼錯誤: {e}")
