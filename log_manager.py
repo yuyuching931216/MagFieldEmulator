@@ -3,19 +3,24 @@ import pandas as pd
 import threading
 import traceback
 from typing import Dict, List
+from datetime import datetime
 
 class LogManager:
-    def __init__(self, log_file: str, flush_interval: int = 10):
-        self.log_file = log_file
+    def __init__(self, log_dir: str, flush_interval: int = 10):
+        self.log_dir = log_dir
         self.flush_interval = flush_interval
         self._log: List[Dict] = []
         self._lock = threading.Lock()
         self._setup_log_directory()
+        self.log_file = self._generate_log_filename()
 
     def _setup_log_directory(self):
-        log_dir = os.path.dirname(self.log_file)
-        if log_dir and not os.path.exists(log_dir):
-            os.makedirs(log_dir, exist_ok=True)
+        if not os.path.exists(self.log_dir):
+            os.makedirs(self.log_dir, exist_ok=True)
+
+    def _generate_log_filename(self) -> str:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return os.path.join(self.log_dir, f"log_{timestamp}.csv")
 
     def add_entry(self, entry: Dict):
         with self._lock:

@@ -25,7 +25,7 @@ class MagneticFieldController:
         self.base_path = os.path.dirname(os.path.abspath(__file__))
         self.config = self._load_config()
         self.state = AppState(self.config.interval)
-        self.log_manager = LogManager(os.path.join(self.base_path, self.config.csv_log), self.config.log_flush_interval)
+        self.log_manager = LogManager(os.path.join(self.base_path, self.config.csv_log_folder), self.config.log_flush_interval)
         self.command_interface = CommandInterface()
         self.channels = {"ao": [f"{self.config.device_name}/ao{i}" for i in (2, 3, 1, 0)],
                          "do": [f"{self.config.device_name}/port0/line{i}" for i in range(8,32)],
@@ -109,16 +109,17 @@ class MagneticFieldController:
                     sys.exit(1)
             else:
                 print("錯誤：無效的選擇")
-                sys.exit(1)
+                return False
         except ValueError:
             print("錯誤：請輸入有效的數字")
-            sys.exit(1)
+            return False
         except IndexError:
             print("錯誤：選擇的檔案不存在")
-            sys.exit(1)
+            return False
         except Exception as e:
             print(f"錯誤：載入資料時發生錯誤: {e}")
-            sys.exit(1)
+            return False
+        return True
 
     def safe_stop(self):
         self.state.stop = True
@@ -221,7 +222,9 @@ class MagneticFieldController:
                     "vy": vy,
                     "vz": vz,
                     "success": voltage_output_success,
-                    "analog_data": analog_data,
+                    "analog_x": analog_data[0],
+                    "analog_y": analog_data[1],
+                    "analog_z": analog_data[2],
                 })
                 
                 self.state.current_row += 1
@@ -278,6 +281,7 @@ class MagneticFieldController:
                         # 記錄數據
                         self.calibrators[axis]["X"].append(expected)
                         self.calibrators[axis]["y"].append(measured)
+                time.sleep(0.1)
             
             # 訓練線性回歸模型
             for axis, data in self.calibrators.items():
@@ -364,7 +368,9 @@ class MagneticFieldController:
 
     def run(self):
         print("=== 磁場模擬控制器 ===")
-        self._choose_file()
+        while not self._choose_file():
+            pass
+        
         output_thread = threading.Thread(target=self.output_loop, daemon=True)
         output_thread.start()
 
