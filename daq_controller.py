@@ -6,7 +6,7 @@ import numpy as np
 from typing import List
 
 class DAQController:
-    def __init__(self, device_name: str, channels: dict[str, List[str]], sample_rate: int = 100, buffer_size: int = 1000):
+    def __init__(self, device_name: str, channels: dict[str, List[str]], sample_rate: int = 1000, buffer_size: int = 1000):
         self.device_name = device_name
         self.ao_task = None
         self.do_task = None
@@ -41,7 +41,7 @@ class DAQController:
                                                     sample_mode=AcquisitionType.CONTINUOUS, 
                                                     samps_per_chan=self.buffer_size)
             
-            self.ao_task.register_every_n_samples_transfer_event(self.buffer_size, self._buffer_callback)
+            self.ao_task.register_every_n_samples_transferred_from_buffer_event(self.buffer_size, self._buffer_callback)
 
             for ch in self.channels.get('do', []):
                 self.do_task.do_channels.add_do_chan(ch)

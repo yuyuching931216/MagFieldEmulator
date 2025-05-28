@@ -27,9 +27,9 @@ class MagneticFieldController:
         self.state = AppState(self.config.interval)
         self.log_manager = LogManager(os.path.join(self.base_path, self.config.csv_log_folder), self.config.log_flush_interval)
         self.command_interface = CommandInterface()
-        self.channels = {"ao": [f"{self.config.device_name}/ao{i}" for i in (2, 3, 1, 0)],
-                         "do": [f"{self.config.device_name}/port0/line{i}" for i in range(8,32)],
-                         "ai": [f"{self.config.device_name}/ai{i}" for i in range(19, 22)]}
+        self.channels = {'ao': [f"{self.config.device_name}/ao{i}" for i in (2, 3, 1, 0)],
+                         'do': [f"{self.config.device_name}/port0/line{i}" for i in range(8,32)],
+                         'ai': [f"{self.config.device_name}/ai{i}" for i in range(19, 22)]}
         # 設置指令處理器
         self._register_commands()
 
