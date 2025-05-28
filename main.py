@@ -140,7 +140,7 @@ class MagneticFieldController:
                 self.state.skipped_row = None
 
         # 誤差調整
-        self.fix_voltage_offset()
+        # self.fix_voltage_offset()
 
         rows_processed = 0
         # 儲存每軸的過去誤差，用來進行簡單校準
@@ -204,7 +204,7 @@ class MagneticFieldController:
                         measured = analog_data[i] / 10
                         expected = output_voltages[i]
                         axis = ['x', 'y', 'z'][i] if i < 3 else 'other'
-                        print(f'{axis.upper()}={measured:.4f}, 差距{((measured - expected)*100/expected):.4f}%', end='; ')
+                        print(f'{axis.upper()}={measured * 100000: .0f}(nT)', end='; ')
                     print('')
                 else:
                     print("讀取類比信號失敗")
@@ -281,7 +281,7 @@ class MagneticFieldController:
                 if analog_data is not None:
                     for i in range(len(analog_data)):
                         measured = analog_data[i] / 10
-                        expected = output_voltages[i]
+                        expected = data[i]
                         axis = ['x', 'y', 'z'][i] if i < 3 else 'other'
                         # 記錄數據
                         self.calibrators[axis]["X"].append(expected)
