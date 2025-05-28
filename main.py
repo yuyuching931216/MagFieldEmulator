@@ -205,13 +205,12 @@ class MagneticFieldController:
                         expected = output_voltages[i]
                         axis = ['x', 'y', 'z'][i] if i < 3 else 'other'
                         print(f'{axis.upper()}={measured:.4f}, 差距{((measured - expected)*100/expected):.4f}%', end='; ')
-
                     print('')
                 else:
                     print("讀取類比信號失敗")
 
                 # 記錄 log
-                self.log_manager.add_entry({
+                log_entry = {
                     "index": self.state.current_row,	
                     "utc_time": now,
                     "local_time": local_time,
@@ -222,10 +221,16 @@ class MagneticFieldController:
                     "vy": vy,
                     "vz": vz,
                     "success": voltage_output_success,
-                    "analog_x": analog_data[0],
-                    "analog_y": analog_data[1],
-                    "analog_z": analog_data[2],
-                })
+                }
+                
+                if analog_data is not None:
+                    log_entry.update({
+                        "analog_x": analog_data[0],
+                        "analog_y": analog_data[1],
+                        "analog_z": analog_data[2],
+                    })
+                
+                self.log_manager.add_entry(log_entry)
                 
                 self.state.current_row += 1
                 
@@ -281,6 +286,8 @@ class MagneticFieldController:
                         # 記錄數據
                         self.calibrators[axis]["X"].append(expected)
                         self.calibrators[axis]["y"].append(measured)
+                else:
+                    print("警告：無法讀取類比信號，跳過此校準點")
                 time.sleep(0.1)
             
             # 訓練線性回歸模型
@@ -314,6 +321,8 @@ class MagneticFieldController:
             val = float(parts[2])
             if val <= 0:
                 print("間隔必須大於0秒")
+            elif val > 3600:  # 限制最大間隔為1小時
+                print("間隔不能超過3600秒（1小時）")
             else:
                 self.state.interval = val
                 print(f"輸出間隔已設為 {val} 秒。")
@@ -344,9 +353,14 @@ class MagneticFieldController:
     def _cmd_stop(self) -> bool:
         self.safe_stop()
         return False  # 回傳 False 表示應該結束命令循環
-    def _cmd_jump(self) -> bool:
+        
+    def _cmd_jump(self, cmd: str) -> bool:
         try:
-            parts = self.command_interface.get_command().split()
+            if self.dataframe is None:
+                print("錯誤：尚未載入資料")
+                return True
+                
+            parts = cmd.split()
             if len(parts) != 2:
                 raise ValueError("參數數量錯誤")
             row_number = int(parts[1])

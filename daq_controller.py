@@ -49,6 +49,10 @@ class DAQController:
             for ch in self.channels.get('ai', []):
                 self.ai_task.ai_channels.add_ai_voltage_chan(ch, terminal_config=TerminalConfiguration.NRSE)
 
+            self.ai_task.timing.cfg_samp_clk_timing(self.sample_rate,
+                                                  sample_mode=AcquisitionType.CONTINUOUS,
+                                                  samps_per_chan=self.buffer_size)
+
             self.ai_task.start()
             return True
         
@@ -105,20 +109,20 @@ class DAQController:
         
     def read_analog(self) -> List[float]:
         if not self.ai_task:
-            return None
+            return []
         try:
             data = self.ai_task.read()
             return data
         except Exception as e:
             print(f"讀取類比信號時發生錯誤: {e}")
             traceback.print_exc()
-            return None
+            return []
 
     def close(self):
         if self.ao_task:
             try:
                 # 輸出零電壓
-                self.write_voltages([0.0] * len(self.channels))
+                self.write_voltages([0.0] * len(self.channels.get('ao', [])))
                 self.ao_task.close()
                 self.ai_task.close()
                 self.do_task.close()
