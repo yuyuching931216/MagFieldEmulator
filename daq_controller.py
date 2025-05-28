@@ -1,5 +1,5 @@
 import nidaqmx
-from nidaqmx.constants import TerminalConfiguration, AcquisitionType
+from nidaqmx.constants import TerminalConfiguration, AcquisitionType, RegenerationMode
 from nidaqmx.stream_writers import AnalogMultiChannelWriter
 import traceback
 import numpy as np
@@ -41,6 +41,8 @@ class DAQController:
                                                     sample_mode=AcquisitionType.CONTINUOUS, 
                                                     samps_per_chan=self.buffer_size)
             
+            self.ao_task.out_stream.regen_mode = RegenerationMode.DONT_ALLOW_REGENERATION
+
             self.ao_task.register_every_n_samples_transferred_from_buffer_event(self.buffer_size, self._buffer_callback)
 
             for ch in self.channels.get('do', []):
