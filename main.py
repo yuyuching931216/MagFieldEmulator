@@ -6,7 +6,7 @@ import signal
 import sys
 from datetime import datetime, timezone
 from typing import List
-from sklearn.linear_model import LinearRegression
+#from sklearn.linear_model import LinearRegression
 
 # 導入各模組
 from app_config import AppConfig
@@ -250,7 +250,8 @@ class MagneticFieldController:
 
             self.state.task_active = False
             print("模擬完成，已停止輸出。")
-
+            
+    '''
     def fix_voltage_offset(self):
         """修正電壓偏移"""
         with DAQController(self.config.device_name, self.channels) as daq:
@@ -300,7 +301,8 @@ class MagneticFieldController:
                     print(f"{axis.upper()} 軸的電壓偏移修正係數: {model.coef_[0]:.4f}, 偏移量: {model.intercept_:.4f}")
                 else:
                     print(f"{axis.upper()} 軸的數據不足，無法訓練模型")
-
+    '''
+    
     # 指令處理函數
     def _cmd_pause(self) -> bool:
         self.state.paused = True

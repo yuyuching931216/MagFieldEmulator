@@ -5,7 +5,7 @@ from dataclasses import dataclass
 class AppConfig:
     csv_input: str = "None"
     csv_folder: str = "data"
-    csv_log_folder: str = "log"
+    csv_log_folder: str = "logs"
     device_name: str = "Dev1"
     nt_to_volt: float = 1.0 / 100000  # 1V = 10,000nT
     interval: float = 60.0  # 每 60 秒輸出一次
