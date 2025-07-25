@@ -49,7 +49,11 @@ class DAQController:
                 self.do_task.do_channels.add_do_chan(ch)
 
             for ch in self.channels.get('ai', []):
-                self.ai_task.ai_channels.add_ai_voltage_chan(ch, terminal_config=TerminalConfiguration.NRSE)
+                self.ai_task.ai_channels.add_ai_voltage_chan(ch, terminal_config=TerminalConfiguration.DIFF)
+
+            self.ai_task.timing.cfg_samp_clk_timing(self.sample_rate,
+                                                    sample_mode=AcquisitionType.CONTINUOUS, 
+                                                    samps_per_chan=self.buffer_size)
 
             self.ai_task.start()
             return True
@@ -94,7 +98,6 @@ class DAQController:
                 writer.write_many_sample(samples)
         except nidaqmx.errors.DaqError as e:
             print(f"緩衝區回呼錯誤: {e}")
-            traceback.print_exc()
         return 0
 
     def write_digital(self, data: List[int]) -> bool:
@@ -110,9 +113,15 @@ class DAQController:
         
     def read_analog(self) -> List[float]:
         if not self.ai_task:
-            return []
+            return list()
         try:
-            data = self.ai_task.read()
+            data = self.ai_task.read(number_of_samples_per_channel=self.buffer_size)
+            if isinstance(data, np.ndarray):
+                data = data.tolist()
+            elif isinstance(data, list):
+                data = [list(d) for d in data]
+            else:
+                raise TypeError("讀取的數據格式不正確")
             return data
         except Exception as e:
             print(f"讀取類比信號時發生錯誤: {e}")
