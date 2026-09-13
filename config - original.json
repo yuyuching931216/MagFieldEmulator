@@ -1,0 +1,9 @@
+{
+  "csv_input": "None",
+  "csv_folder": "data",
+  "csv_log_folder": "log",
+  "device_name": "Dev1",
+  "nt_to_volt": 1e-05,
+  "interval": 1.0,
+  "log_flush_interval": 10
+}

@@ -16,6 +16,7 @@ from data_loader import DataLoader
 from daq_controller import DAQController
 from command_interface import CommandInterface
 from testing_data import testing_data
+from precise_interval_timer import PreciseIntervalTimer, OverlapStrategy
 
 class MagneticFieldController:
     def __init__(self):
@@ -28,14 +29,39 @@ class MagneticFieldController:
         self.log_manager = LogManager(os.path.join(self.base_path, self.config.csv_log_folder), self.config.log_flush_interval)
         self.command_interface = CommandInterface()
         self.channels = {'ao': [f"{self.config.device_name}/ao{i}" for i in (2, 3, 1, 0)],
-                         'do': [f"{self.config.device_name}/port0/line{i}" for i in range(8,32)],
-                         'ai': [f"{self.config.device_name}/ai{i}" for i in range(19, 22)]}
+                         'do': [f"{self.config.device_name}/port0/line{i}" for i in range(0,32)],
+                         'ai': [f"{self.config.device_name}/ai{i}" for i in (19, 20, 21)]}
         # 設置指令處理器
         self._register_commands()
+
+        # init do pin state
+        self._initialize_digital_control()
 
         # 設置信號處理
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
+
+    def _initialize_digital_control(self):
+        # 建立長度為 32 的布林陣列 (對應 P0.0 到 P0.31)，預設全為 False (0)
+        self.digital_states = [False] * 32
+        
+        # 1. 強制設定所有 Reserved Lines 為 True (1)
+        reserved_lines = [0, 1, 2, 3, 4, 5, 6, 7, 11, 12, 14, 27, 28]
+        for line in reserved_lines:
+            self.digital_states[line] = True
+            
+        # 2. 設定常規運行與狀態控制
+        self.digital_states[8] = True   # P0.8: AUX Self-Test Enable (1 = Normal)
+        self.digital_states[9] = True   # P0.9: DUT Self-Test Enable (1 = Normal)
+        self.digital_states[10] = True  # P0.10: DUT Input Gain (1 = Gain x1)
+        self.digital_states[13] = True  # P0.13: LED colour (1 = Green)
+        self.digital_states[15] = True  # P0.15: Alarm Buzzer (1 = Silent)
+        
+        # 3. 設定感測器輸入模式
+        # P0.24, P0.25, P0.26 are False by default (Single-ended, Normal polarity)
+        
+        # 4. 停用硬體濾波器
+        self.digital_states[29] = True  # P0.29: Filter Enable (1 = No Filter)
 
     def _register_commands(self):
         """註冊所有可用的指令"""
@@ -140,117 +166,145 @@ class MagneticFieldController:
                 self.state.skipped_row = None
 
         # 誤差調整
-        self.fix_voltage_offset()
+        #self.fix_voltage_offset()
 
         rows_processed = 0
         # 儲存每軸的過去誤差，用來進行簡單校準
         #error_history = {"x": [], "y": [], "z": []}
         #MAX_HISTORY = 10  # 使用最近10筆誤差做平均
 
+        # inner function to define the main loop of the DAQ
+        def main_loop(timer: PreciseIntervalTimer):
+            skip_function() 
+
+            if self.state.current_row > len(self.dataframe):
+                timer.stop()
+            if self.state.stop:
+                timer.stop()
+                
+            if self.state.paused and not self.state.stop:
+                return
+                
+            row = self.dataframe.iloc[self.state.current_row]
+
+            # 計算電壓（限制最大電壓）
+            vx = row.Bx * self.config.nt_to_volt * self.voltage_gain[0] + self.voltage_offset[0]
+            vy = row.By * self.config.nt_to_volt * self.voltage_gain[1] + self.voltage_offset[1]
+            vz = row.Bz * self.config.nt_to_volt * self.voltage_gain[2] + self.voltage_offset[2]
+
+            vx = max(min(vx, self.MAX_VOLTAGE), -self.MAX_VOLTAGE) / 2
+            vy = max(min(vy, self.MAX_VOLTAGE), -self.MAX_VOLTAGE) / 2
+            vz = max(min(vz, self.MAX_VOLTAGE), -self.MAX_VOLTAGE) / 2
+
+            output_voltages = [vx, vy, vz, 6]
+
+            # 輸出電壓
+            voltage_output_success = daq.write_voltages(output_voltages)
+            
+
+            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            local_time = datetime.now().replace(microsecond=0).isoformat()
+
+            # 輸出結果
+            print(f"[{local_time}] 輸出 B(nT)=({row.Bx:.1f}, {row.By:.1f}, {row.Bz:.1f}) -> V=({vx:.4f}, {vy:.4f}, {vz:.4f}) {'V' if voltage_output_success else 'X'}")
+
+            # 讀取類比信號
+            analog_data = daq.read_analog()
+            if analog_data is not None:
+                print(f"讀取類比信號 :")
+                for i in range(len(analog_data)):
+                    measured = (analog_data[i] - self.analog_offset[i]) /10
+                    axis = ['x', 'y', 'z'][i] if i < 3 else 'other'
+                    print(f'{axis.upper()}={measured * 100000: .0f}(nT) -> V={measured: .4f}(v)', end='; ')
+                    print('')
+            else:
+                print("讀取類比信號失敗")
+
+            print('\n')
+
+            # 記錄 log
+            log_entry = {
+                "index": self.state.current_row,	
+                "utc_time": now,
+                "local_time": local_time,
+                "bx_nt": row.Bx,
+                "by_nt": row.By,
+                "bz_nt": row.Bz,
+                "vx": vx,
+                "vy": vy,
+                "vz": vz,
+                "success": voltage_output_success,
+            }
+            
+            if analog_data is not None:
+                log_entry.update({
+                    "analog_x": (analog_data[0] - self.analog_offset[0]) *10000,
+                    "analog_y": (analog_data[1] - self.analog_offset[1]) *10000,
+                    "analog_z": (analog_data[2] - self.analog_offset[2]) *10000,
+                })
+            
+            self.log_manager.add_entry(log_entry)
+            
+            self.state.current_row += 1
+            
+        "def main_loop end"
+
         with DAQController(self.config.device_name, self.channels) as daq:
             if not daq.ao_task:
                 print("DAQ初始化失敗，終止輸出線程")
                 return
-
+            
             self.state.task_active = True
-            daq.write_digital([True] * len(self.channels.get('do', [])))  # 設定數位輸出為高電平
+            daq.write_digital(self.digital_states)
+            daq.write_voltages([0, 0, 0, 6])
+            offset_sum = [0, 0, 0]
+            self.analog_offset = [0, 0, 0]
+            # 預熱
+            for i in range(6):
+                daq.read_analog()
+                time.sleep(0.5)
+
+            # 讀ai 3 次
+            for i in range(3):
+                analog_data = daq.read_analog()
+                for j in range(3):
+                    offset_sum[j] += analog_data[j]
+
+                print(f'ai read {analog_data}')
+                
+                time.sleep(1)
+
+            # 求平均作為offset
+            for i in range(3):
+                self.analog_offset[i] = offset_sum[i] / 3
+            print(f"已矯正DUT誤差，{self.analog_offset}")
+
 
             print("DAQ任務已初始化，開始輸出...")
             
             self.state.current_row = 0
-            while self.state.current_row < len(self.dataframe):
 
-                skip_function() 
-                row = self.dataframe.iloc[self.state.current_row]
-                
-                if self.state.stop:
-                    break
-                 
-                while self.state.paused and not self.state.stop:
-                    time.sleep(0.1)
-                
-                if self.state.stop:
-                    break
+            timer = PreciseIntervalTimer(
+                interval_seconds=self.config.interval, 
+                callback=main_loop,
+                strategy=OverlapStrategy.SKIP,
+                max_pending=50,
+                inject_timer=True
+            )
 
-                # 計算開始時間
-                start_time = time.perf_counter()
-                    
-                # 計算電壓（限制最大電壓）
-                vx = row.Bx * self.config.nt_to_volt * self.voltage_gain[0] + self.voltage_offset[0]
-                vy = row.By * self.config.nt_to_volt * self.voltage_gain[1] + self.voltage_offset[1]
-                vz = row.Bz * self.config.nt_to_volt * self.voltage_gain[2] + self.voltage_offset[2]
+            """Waiting the DAQ to initialize"""
+            time.sleep(2)
+            timer.start()
 
-                vx = max(min(vx, self.MAX_VOLTAGE), -self.MAX_VOLTAGE) / -2
-                vy = max(min(vy, self.MAX_VOLTAGE), -self.MAX_VOLTAGE) / -2
-                vz = max(min(vz, self.MAX_VOLTAGE), -self.MAX_VOLTAGE) / -2
-
-                output_voltages = [vx, vy, vz, 6]
-
-                # 輸出電壓
-                voltage_output_success = daq.write_voltages(output_voltages)
-                
-
-                now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-                local_time = datetime.now().replace(microsecond=0).isoformat()
-
-                # 輸出結果
-                print(f"[{local_time}] 輸出 B(nT)=({row.Bx:.1f}, {row.By:.1f}, {row.Bz:.1f}) → V=({vx:.4f}, {vy:.4f}, {vz:.4f}) {'✓' if voltage_output_success else '✗'}")
-
-                # 讀取類比信號
-                analog_data = daq.read_analog()
-                if analog_data is not None:
-                    print(f"讀取類比信號", end=': ')
-                    for i in range(len(analog_data)):
-                        measured = analog_data[i] / 10
-                        expected = output_voltages[i]
-                        axis = ['x', 'y', 'z'][i] if i < 3 else 'other'
-                        print(f'{axis.upper()}={measured:.4f}, 差距{((measured - expected)*100/expected):.4f}%', end='; ')
-                    print('')
-                else:
-                    print("讀取類比信號失敗")
-
-                # 記錄 log
-                log_entry = {
-                    "index": self.state.current_row,	
-                    "utc_time": now,
-                    "local_time": local_time,
-                    "bx_nt": row.Bx,
-                    "by_nt": row.By,
-                    "bz_nt": row.Bz,
-                    "vx": vx,
-                    "vy": vy,
-                    "vz": vz,
-                    "success": voltage_output_success,
-                }
-                
-                if analog_data is not None:
-                    log_entry.update({
-                        "analog_x": analog_data[0],
-                        "analog_y": analog_data[1],
-                        "analog_z": analog_data[2],
-                    })
-                
-                self.log_manager.add_entry(log_entry)
-                
-                self.state.current_row += 1
-                
-                # 定期寫入日誌
-                rows_processed += 1
-                if self.log_manager.should_flush(rows_processed):
-                    self.log_manager.flush()
-                    
-                # 計算需要等待的時間
-                elapsed = time.perf_counter() - start_time
-                wait_time = max(0, self.state.interval - elapsed)
-                
-                # 分段等待，以便能夠更快地響應暫停或停止命令
-                wait_end_time = time.perf_counter() + wait_time
-                while time.perf_counter() < wait_end_time and not self.state.stop and not self.state.paused:
-                    time.sleep(0.1)
-
+            while timer.is_running:
+                time.sleep(1)
+            time.sleep(1)
+            
             self.state.task_active = False
             print("模擬完成，已停止輸出。")
-
+    
+    
+    
     def fix_voltage_offset(self):
         """修正電壓偏移"""
         with DAQController(self.config.device_name, self.channels) as daq:
@@ -281,7 +335,7 @@ class MagneticFieldController:
                 if analog_data is not None:
                     for i in range(len(analog_data)):
                         measured = analog_data[i] / 10
-                        expected = output_voltages[i]
+                        expected = data[i]
                         axis = ['x', 'y', 'z'][i] if i < 3 else 'other'
                         # 記錄數據
                         self.calibrators[axis]["X"].append(expected)
@@ -379,7 +433,7 @@ class MagneticFieldController:
             return True
         return True
     
-
+    
     def run(self):
         print("=== 磁場模擬控制器 ===")
         while not self._choose_file():

@@ -6,3 +6,4 @@ data/*
 !data/.gitkeep
 config.json
 test.py
+log/*

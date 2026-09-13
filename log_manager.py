@@ -4,6 +4,7 @@ import threading
 import traceback
 from typing import Dict, List
 from datetime import datetime
+from itertools import count
 
 class LogManager:
     def __init__(self, log_dir: str, flush_interval: int = 10):
@@ -13,6 +14,7 @@ class LogManager:
         self._lock = threading.Lock()
         self._setup_log_directory()
         self.log_file = self._generate_log_filename()
+        self.counter = count(start=0)
 
     def _setup_log_directory(self):
         if not os.path.exists(self.log_dir):
@@ -25,6 +27,9 @@ class LogManager:
     def add_entry(self, entry: Dict):
         with self._lock:
             self._log.append(entry)
+            next(self.counter)
+            if self.should_flush():
+                self.flush()
 
     def flush(self):
         if not self._log:
@@ -36,12 +41,13 @@ class LogManager:
                 write_header = not os.path.exists(self.log_file)
                 df.to_csv(self.log_file, mode='a', header=write_header, index=False)
                 self._log = []
+                self.counter = 0
             except Exception as e:
                 print(f"寫入日誌失敗: {e}")
                 traceback.print_exc()
 
-    def should_flush(self, counter: int) -> bool:
-        return counter % self.flush_interval == 0
+    def should_flush(self) -> bool:
+        return self.counter == self.flush_interval
         
     @property
     def entry_count(self) -> int:
