@@ -1,6 +1,7 @@
 import pandas as pd
 import traceback
 from typing import Optional
+from app_logger import log_exception
 
 class DataLoader:
     @staticmethod
@@ -42,5 +43,5 @@ class DataLoader:
             print(f"錯誤：找不到文件 {file_path}")
         except Exception as e:
             print(f"載入資料時發生錯誤: {e}")
-            traceback.print_exc()
+            log_exception("載入資料例外")
         return None
