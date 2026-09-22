@@ -56,13 +56,15 @@ class MagneticFieldController:
             
         # 2. 設定常規運行與狀態控制
         self.digital_states[8] = True   # P0.8: AUX Self-Test Enable (1 = Normal)
-        self.digital_states[9] = True   # P0.9: DUT Self-Test Enable (1 = Normal)
+        self.digital_states[9] = True  # P0.9: DUT Self-Test Enable (1 = Normal)
         self.digital_states[10] = True  # P0.10: DUT Input Gain (1 = Gain x1)
         self.digital_states[13] = True  # P0.13: LED colour (1 = Green)
         self.digital_states[15] = True  # P0.15: Alarm Buzzer (1 = Silent)
         
         # 3. 設定感測器輸入模式
         # P0.24, P0.25, P0.26 are False by default (Single-ended, Normal polarity)
+        # DUT using Diff mode
+        # self.digital_states[25] = True
         
         # 4. 停用硬體濾波器
         self.digital_states[29] = True  # P0.29: Filter Enable (1 = No Filter)
@@ -180,7 +182,7 @@ class MagneticFieldController:
         def main_loop(timer: PreciseIntervalTimer):
             skip_function() 
 
-            if self.state.current_row > len(self.dataframe):
+            if self.state.current_row >= len(self.dataframe):
                 timer.request_stop()
                 return
             if self.state.stop:
@@ -269,6 +271,7 @@ class MagneticFieldController:
                 daq.read_analog()
                 time.sleep(0.5)
 
+            
             # 讀ai 3 次
             for i in range(3):
                 analog_data = daq.read_analog()
@@ -283,7 +286,7 @@ class MagneticFieldController:
             for i in range(3):
                 self.analog_offset[i] = offset_sum[i] / 3
             print(f"已矯正DUT誤差，{self.analog_offset}")
-
+            
 
             print("DAQ任務已初始化，開始輸出...")
             
@@ -308,58 +311,7 @@ class MagneticFieldController:
             timer.stop(timeout=5.0)
             self.state.task_active = False
             print("模擬完成，已停止輸出。")
-    
-    
-    
-    def fix_voltage_offset(self):
-        """修正電壓偏移"""
-        with DAQController(self.config.device_name, self.channels) as daq:
-            if not daq.ao_task:
-                print("DAQ初始化失敗，終止修正")
-                return
 
-            # 設定數位輸出為高電平
-            daq.write_digital([True] * len(self.channels.get('do', [])))
-            print("開始修正電壓偏移...")
-            for data in testing_data:
-                # 計算電壓（限制最大電壓）
-                vx = data[0] * self.config.nt_to_volt * self.voltage_gain[0] + self.voltage_offset[0]
-                vy = data[1] * self.config.nt_to_volt * self.voltage_gain[1] + self.voltage_offset[1]
-                vz = data[2] * self.config.nt_to_volt * self.voltage_gain[2] + self.voltage_offset[2]
-
-                vx = max(min(vx, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
-                vy = max(min(vy, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
-                vz = max(min(vz, self.MAX_VOLTAGE), -self.MAX_VOLTAGE)
-
-                output_voltages = [vx, vy, vz, 6]
-
-                # 輸出電壓
-                daq.write_voltages(output_voltages)
-                time.sleep(0.1)
-                # 讀取類比信號
-                analog_data = daq.read_analog()
-                if analog_data is not None:
-                    for i in range(len(analog_data)):
-                        measured = analog_data[i] / 10
-                        expected = data[i]
-                        axis = ['x', 'y', 'z'][i] if i < 3 else 'other'
-                        # 記錄數據
-                        self.calibrators[axis]["X"].append(expected)
-                        self.calibrators[axis]["y"].append(measured)
-                else:
-                    print("警告：無法讀取類比信號，跳過此校準點")
-                time.sleep(0.1)
-            
-            # 訓練線性回歸模型
-            for axis, data in self.calibrators.items():
-                if len(data["X"]) > 0:
-                    X = [[x] for x in data["X"]]
-                    y = data["y"]
-                    model = data["model"]
-                    model.fit(X, y)
-                    print(f"{axis.upper()} 軸的電壓偏移修正係數: {model.coef_[0]:.4f}, 偏移量: {model.intercept_:.4f}")
-                else:
-                    print(f"{axis.upper()} 軸的數據不足，無法訓練模型")
 
     # 指令處理函數
     def _cmd_pause(self) -> bool:

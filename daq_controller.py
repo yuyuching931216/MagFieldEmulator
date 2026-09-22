@@ -94,25 +94,25 @@ class DAQController:
             return False
 
     def _buffer_callback(self, task_handle, event_type, sample_number, callback_data):
-        try:
-            if self.ao_task is None:
-                print("AO task， 跳過callback")
-                return 0
+        with self.lock:
             try:
-                if self.ao_task.is_task_done():
+                try:
+                    if self.ao_task is None:
+                        print("AO task， 跳過callback")
+                        return 0
+                    if self.ao_task.is_task_done():
+                        return 0
+                except nidaqmx.errors.DaqError as e:
+                    print(f"無法檢查task狀態:{e}")
                     return 0
-            except nidaqmx.errors.DaqError as e:
-                print(f"無法檢查task狀態:{e}")
-                return 0
 
-            with self.lock:
                 if self.voltages is not None:
                     samples = np.array([np.full(self.buffer_size, v,dtype=np.float64) for v in self.voltages])
                     writer = AnalogMultiChannelWriter(self.ao_task.out_stream, auto_start=False)
                     writer.write_many_sample(samples)
-        except nidaqmx.errors.DaqError as e:
-            print(f"緩衝區回呼錯誤: {e}")
-            log_exception("緩衝區回呼例外")
+            except nidaqmx.errors.DaqError as e:
+                print(f"緩衝區回呼錯誤: {e}")
+                log_exception("緩衝區回呼例外")
         return 0
 
     def write_digital(self, data: List[int]) -> bool:
@@ -157,13 +157,11 @@ class DAQController:
             return []
 
     def close(self):
-        if self.ao_task:
+        with self.lock:
             try:
-                self.ao_task.unregister_every_n_samples_transferred_from_buffer_event()
                 # 輸出零電壓
                 if self.ao_task:
                     self.write_voltages([0.0] * len(self.channels.get('ao', [])))
-                    # self.ao_task.unregister_every_n_samples_transferred_from_buffer_event()
                     self.ao_task.close()
                     self.ao_task=None
                 if self.ai_task:
