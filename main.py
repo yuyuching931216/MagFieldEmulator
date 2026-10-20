@@ -20,6 +20,11 @@ from testing_data import testing_data
 from precise_interval_timer import PreciseIntervalTimer, OverlapStrategy
 
 class MagneticFieldController:
+    BUFFER_UPDATE_INTERVAL_SECONDS = 3.0
+    INITIAL_BUFFER_SECONDS = 13.0
+    MIN_PENDING_SAMPLES = 10000
+    DAQ_SAMPLE_RATE = 1000
+
     def __init__(self):
         self.MAX_VOLTAGE = 10.0  # 最大電壓 ±10V
         self.voltage_gain = (1.182, 1.18, 1.206)  # 電壓乘數
@@ -32,6 +37,11 @@ class MagneticFieldController:
         self.log_manager = LogManager(os.path.join(self.base_path, self.config.csv_log_folder), self.config.log_flush_interval)
         self.command_interface = CommandInterface()
         self._timer = None
+        self._analog_timer = None
+        self._analog_callback = None
+        self._daq = None
+        self._resume_sample_offset = 0
+        self._resume_needs_rebuild = False
         self.channels = {'ao': [f"{self.config.device_name}/ao{i}" for i in (2, 3, 1, 0)],
                          'do': [f"{self.config.device_name}/port0/line{i}" for i in range(0,32)],
                          'ai': [f"{self.config.device_name}/ai{i}" for i in (19, 20, 21)]}
@@ -74,6 +84,7 @@ class MagneticFieldController:
         self.command_interface.register_command("pause", lambda _: self._cmd_pause(), "暫停輸出")
         self.command_interface.register_command("resume", lambda _: self._cmd_resume(), "恢復輸出")
         self.command_interface.register_command("set interval", self._cmd_set_interval, "設定輸出間隔，用法: set interval <秒>")
+        self.command_interface.register_command("set analog interval", self._cmd_set_analog_interval, "設定 analog 讀取間隔，用法: set analog interval <秒>")
         self.command_interface.register_command("status", lambda _: self._cmd_status(), "顯示目前狀態")
         self.command_interface.register_command("save config", lambda _: self._cmd_save_config(), "保存當前設定")
         self.command_interface.register_command("stop", lambda _: self._cmd_stop(), "停止程式")
@@ -93,7 +104,20 @@ class MagneticFieldController:
             if os.path.exists(config_file):
                 with open(config_file, 'r', encoding='utf-8') as f:
                     config_data = json.load(f)
-                    return AppConfig.from_dict(config_data)
+                migrated = "analog_interval" not in config_data
+                if migrated:
+                    config_data["analog_interval"] = config_data.get(
+                        "interval", default_config.interval
+                    )
+                config = AppConfig.from_dict(config_data)
+                if migrated:
+                    with open(config_file, 'w', encoding='utf-8') as f:
+                        json.dump(config.to_dict(), f, indent=2, ensure_ascii=False)
+                    print(
+                        "Config updated: added analog_interval="
+                        f"{config.analog_interval} from interval."
+                    )
+                return config
             else:
                 with open(config_file, 'w', encoding='utf-8') as f:
                     json.dump(default_config.to_dict(), f, indent=2, ensure_ascii=False)
@@ -110,6 +134,7 @@ class MagneticFieldController:
                 **self.config.to_dict(),
                 "interval": self.state.interval,
             }
+            config_data["analog_interval"] = self.config.analog_interval
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(config_data, f, indent=2, ensure_ascii=False)
             return True
@@ -164,99 +189,12 @@ class MagneticFieldController:
         print("程式已安全停止。")
 
     def output_loop(self):
-        @self.state.with_lock
-        def skip_function():    
-            if self.state.skipped_row is not None:
-                self.state.current_row = self.state.skipped_row
-                self.state.skipped_row = None
-
-        # 誤差調整
-        #self.fix_voltage_offset()
-
-        rows_processed = 0
-        # 儲存每軸的過去誤差，用來進行簡單校準
-        #error_history = {"x": [], "y": [], "z": []}
-        #MAX_HISTORY = 10  # 使用最近10筆誤差做平均
-
-        # inner function to define the main loop of the DAQ
-        def main_loop(timer: PreciseIntervalTimer):
-            skip_function() 
-
-            if self.state.current_row >= len(self.dataframe):
-                timer.request_stop()
-                return
-            if self.state.stop:
-                timer.request_stop()
-                return
-                
-            if self.state.paused and not self.state.stop:
-                return
-                
-            row = self.dataframe.iloc[self.state.current_row]
-
-            # 計算電壓（限制最大電壓）
-            vx = row.Bx * self.config.nt_to_volt * self.voltage_gain[0] + self.voltage_offset[0]
-            vy = row.By * self.config.nt_to_volt * self.voltage_gain[1] + self.voltage_offset[1]
-            vz = row.Bz * self.config.nt_to_volt * self.voltage_gain[2] + self.voltage_offset[2]
-
-            vx = max(min(vx, self.MAX_VOLTAGE), -self.MAX_VOLTAGE) / 2
-            vy = max(min(vy, self.MAX_VOLTAGE), -self.MAX_VOLTAGE) / 2
-            vz = max(min(vz, self.MAX_VOLTAGE), -self.MAX_VOLTAGE) / 2
-
-            output_voltages = [vx, vy, vz, 6]
-
-            # 輸出電壓
-            voltage_output_success = daq.write_voltages(output_voltages)
-            
-
-            now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-            local_time = datetime.now().replace(microsecond=0).isoformat()
-
-            # 輸出結果
-            print(f"[{local_time}] 輸出 B(nT)=({row.Bx:.1f}, {row.By:.1f}, {row.Bz:.1f}) -> V=({vx:.4f}, {vy:.4f}, {vz:.4f}) {'V' if voltage_output_success else 'X'}")
-
-            # 讀取類比信號
-            analog_data = daq.read_analog()
-            if analog_data is not None:
-                print(f"讀取類比信號 :")
-                for i in range(len(analog_data)):
-                    measured = (analog_data[i] - self.analog_offset[i]) /10
-                    axis = ['x', 'y', 'z'][i] if i < 3 else 'other'
-                    print(f'{axis.upper()}={measured * 100000: .0f}(nT) -> V={measured: .4f}(v)', end='; ')
-                    print('')
-            else:
-                print("讀取類比信號失敗")
-
-            print('\n')
-
-            # 記錄 log
-            log_entry = {
-                "index": self.state.current_row,	
-                "utc_time": now,
-                "local_time": local_time,
-                "bx_nt": row.Bx,
-                "by_nt": row.By,
-                "bz_nt": row.Bz,
-                "vx": vx,
-                "vy": vy,
-                "vz": vz,
-                "success": voltage_output_success,
-            }
-            
-            if analog_data is not None:
-                log_entry.update({
-                    "analog_x": (analog_data[0] - self.analog_offset[0]) *10000,
-                    "analog_y": (analog_data[1] - self.analog_offset[1]) *10000,
-                    "analog_z": (analog_data[2] - self.analog_offset[2]) *10000,
-                })
-            
-            self.log_manager.add_entry(log_entry)
-            
-            self.state.current_row += 1
-            
-        "def main_loop end"
-
-        with DAQController(self.config.device_name, self.channels) as daq:
+        with DAQController(
+            self.config.device_name,
+            self.channels,
+            sample_rate=self.DAQ_SAMPLE_RATE,
+        ) as daq:
+            self._daq = daq
             if not daq.ao_task:
                 print("DAQ初始化失敗，終止輸出線程")
                 return
@@ -289,38 +227,208 @@ class MagneticFieldController:
             
 
             print("DAQ任務已初始化，開始輸出...")
-            
+            daq.clear_output()
             self.state.current_row = 0
 
+            def analog_loop(timer):
+                if self.state.stop or self.state.paused:
+                    return
+                analog_data = daq.read_analog()
+                success = bool(analog_data and len(analog_data) >= 3)
+                entry = {
+                    "record_type": "analog_measurement",
+                    "index": None,
+                    "utc_time": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                    "local_time": datetime.now().replace(microsecond=0).isoformat(),
+                    "success": success,
+                    "analog_interval": self.config.analog_interval,
+                }
+                if success:
+                    entry.update({
+                        "analog_raw_x": analog_data[0],
+                        "analog_raw_y": analog_data[1],
+                        "analog_raw_z": analog_data[2],
+                        "analog_calibrated_x": analog_data[0] / 10 * 100000,
+                        "analog_calibrated_y": analog_data[1] / 10 * 100000,
+                        "analog_calibrated_z": analog_data[2] / 10 * 100000,
+                    })
+                self.log_manager.add_entry(entry)
+
+            self._analog_callback = analog_loop
+            self._analog_timer = PreciseIntervalTimer(
+                interval_seconds=self.config.analog_interval,
+                callback=self._analog_callback,
+                strategy=OverlapStrategy.SKIP,
+                max_pending=1,
+                inject_timer=True,
+            )
+            self._analog_timer.start()
+
+            def samples_for_interval(interval):
+                samples = round(interval * self.DAQ_SAMPLE_RATE)
+                if samples <= 0:
+                    raise ValueError("interval 轉換後的 DAQ samples 必須大於 0")
+                return samples
+
+            def voltage_for_row(row):
+                values = [
+                    row.Bx * self.config.nt_to_volt * self.voltage_gain[0] + self.voltage_offset[0],
+                    row.By * self.config.nt_to_volt * self.voltage_gain[1] + self.voltage_offset[1],
+                    row.Bz * self.config.nt_to_volt * self.voltage_gain[2] + self.voltage_offset[2],
+                ]
+                values = [
+                    max(min(value, self.MAX_VOLTAGE), -self.MAX_VOLTAGE) / 2
+                    for value in values
+                ]
+                return values + [6]
+
+            def append_rows(row_count, initial=False):
+                rows = []
+                sample_total = 0
+                interval = self.state.interval
+                while (
+                    self.state.current_row < len(self.dataframe)
+                    and (initial and sample_total < self.DAQ_SAMPLE_RATE * self.INITIAL_BUFFER_SECONDS
+                         or not initial and sample_total < self.DAQ_SAMPLE_RATE * self.BUFFER_UPDATE_INTERVAL_SECONDS)
+                ):
+                    row_index = self.state.current_row
+                    row = self.dataframe.iloc[row_index]
+                    sample_count = samples_for_interval(interval)
+                    if not initial and self._resume_sample_offset:
+                        sample_count = max(sample_count - self._resume_sample_offset, 1)
+                        self._resume_sample_offset = 0
+                    voltages = voltage_for_row(row)
+                    rows.append((row_index, row, voltages, sample_count))
+                    sample_total += sample_count
+                    self.state.current_row += 1
+                    if not initial and len(rows) >= row_count:
+                        break
+
+                if not rows:
+                    return 0, 0
+
+                for row_index, row, voltages, sample_count in rows:
+                    write_success = daq.append_voltages(voltages, sample_count)
+                    pending = daq.get_pending_samples()
+                    print(
+                        f"[DAQ INPUT] index={row_index} "
+                        f"B=({row.Bx:.1f}, {row.By:.1f}, {row.Bz:.1f}) nT -> "
+                        f"V=({voltages[0]:.4f}, {voltages[1]:.4f}, {voltages[2]:.4f}) "
+                        f"samples={sample_count} write={'OK' if write_success else 'FAILED'} "
+                        f"buffer_pending={pending}"
+                    )
+                    if not write_success:
+                        return len(rows), sample_total
+                    self.log_manager.add_entry({
+                        "record_type": "daq_input",
+                        "index": row_index,
+                        "utc_time": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                        "local_time": datetime.now().replace(microsecond=0).isoformat(),
+                        "bx_nt": row.Bx,
+                        "by_nt": row.By,
+                        "bz_nt": row.Bz,
+                        "vx": voltages[0],
+                        "vy": voltages[1],
+                        "vz": voltages[2],
+                        "samples": sample_count,
+                        "buffer_pending": pending,
+                        "success": True,
+                    })
+                return len(rows), sample_total
+
+            print(
+                f"[DAQ BUFFER] initial load started: "
+                f"target_seconds={self.INITIAL_BUFFER_SECONDS:.1f}, "
+                f"interval={self.state.interval}"
+            )
+            initial_rows, initial_samples = append_rows(0, initial=True)
+            print(
+                f"[DAQ BUFFER] initial load complete: added={initial_rows} rows, "
+                f"added_samples={initial_samples}, pending={daq.get_pending_samples()}"
+            )
+            daq.start_output()
+
+            def main_loop(timer):
+                if self.state.stop:
+                    timer.request_stop()
+                    return
+                if self.state.paused:
+                    return
+                if self._resume_needs_rebuild:
+                    daq.clear_output()
+                    self._resume_needs_rebuild = False
+                if self.state.current_row >= len(self.dataframe):
+                    timer.request_stop()
+                    return
+                pending = daq.get_pending_samples()
+                if pending > self.MIN_PENDING_SAMPLES:
+                    print(
+                        f"[DAQ BUFFER] update skipped: pending={pending} samples "
+                        f"(> threshold={self.MIN_PENDING_SAMPLES})"
+                    )
+                    return
+
+                print(
+                    f"[DAQ BUFFER] update started: "
+                    f"target_seconds={self.BUFFER_UPDATE_INTERVAL_SECONDS:.1f}, "
+                    f"interval={self.state.interval}"
+                )
+                added_rows, added_samples = append_rows(
+                    round(self.BUFFER_UPDATE_INTERVAL_SECONDS / self.state.interval)
+                )
+                print(
+                    f"[DAQ BUFFER] update complete: added={added_rows} rows, "
+                    f"added_samples={added_samples}, pending={daq.get_pending_samples()}"
+                )
+
             timer = PreciseIntervalTimer(
-                interval_seconds=self.config.interval, 
+                interval_seconds=self.BUFFER_UPDATE_INTERVAL_SECONDS,
                 callback=main_loop,
                 strategy=OverlapStrategy.SKIP,
-                max_pending=50,
-                inject_timer=True
+                max_pending=1,
+                inject_timer=True,
             )
             self._timer = timer
-
-            """Waiting the DAQ to initialize"""
-            time.sleep(2)
             timer.start()
 
             while timer.is_running:
                 time.sleep(0.1)
 
             timer.stop(timeout=5.0)
+            if self._analog_timer is not None:
+                self._analog_timer.stop(timeout=5.0)
+                self._analog_timer = None
+            while daq.get_pending_samples() > 0 and not self.state.stop:
+                time.sleep(0.1)
             self.state.task_active = False
+            self._daq = None
             print("模擬完成，已停止輸出。")
 
 
     # 指令處理函數
     def _cmd_pause(self) -> bool:
         self.state.paused = True
+        if self._analog_timer is not None:
+            self._analog_timer.stop(timeout=5.0)
+        if self._daq is not None:
+            pending = self._daq.get_pending_samples()
+            generated = self._daq.get_samples_generated()
+            samples_per_row = max(round(self.state.interval * self.DAQ_SAMPLE_RATE), 1)
+            consumed = max(generated, 0)
+            self.state.current_row = max(
+                0, self.state.current_row - round(pending / samples_per_row)
+            )
+            self._resume_sample_offset = consumed % samples_per_row
+            self._daq.clear_output()
+            self._daq.write_voltages([0.0] * len(self.channels["ao"]))
+            self._resume_needs_rebuild = True
         print("已暫停輸出。")
         return True
         
     def _cmd_resume(self) -> bool:
         self.state.paused = False
+        if self._analog_timer is not None:
+            self._analog_timer.start()
         print("已恢復輸出。")
         return True
         
@@ -342,6 +450,35 @@ class MagneticFieldController:
             print(f"無效的數值: {e}")
             print("語法錯誤，使用：set interval <秒>")
         return True
+
+    def _cmd_set_analog_interval(self, cmd: str) -> bool:
+        try:
+            parts = cmd.split()
+            if len(parts) != 4:
+                raise ValueError("parameter count is invalid")
+
+            value = float(parts[3])
+            if value <= 0:
+                print("Analog interval must be greater than 0 seconds.")
+                return True
+
+            self.config.analog_interval = value
+            if self._analog_timer is not None:
+                self._analog_timer.stop(timeout=5.0)
+                self._analog_timer = PreciseIntervalTimer(
+                    interval_seconds=value,
+                    callback=self._analog_callback,
+                    strategy=OverlapStrategy.SKIP,
+                    max_pending=1,
+                    inject_timer=True,
+                )
+                if not self.state.paused:
+                    self._analog_timer.start()
+            print(f"Analog interval set to {value} seconds.")
+        except ValueError as e:
+            print(f"Invalid analog interval: {e}")
+            print("Usage: set analog interval <seconds>")
+        return True
         
     def _cmd_status(self) -> bool:
         current_index = self.state.current_row
@@ -351,13 +488,18 @@ class MagneticFieldController:
         print(f"狀態：{'暫停中' if self.state.paused else '執行中'}")
         print(f"進度：{current_index}/{total_rows} ({progress:.1f}%)")
         print(f"輸出間隔：{self.state.interval} 秒")
+        print(f"Analog interval: {self.config.analog_interval} seconds")
         print(f"電壓限制：±{self.state.voltage_limit} V")
         print(f"日誌緩存條目：{self.log_manager.entry_count}")
         return True
         
     def _cmd_save_config(self) -> bool:
         if self.save_config():
-            print("配置已保存")
+            print(
+                "Config updated: "
+                f"interval={self.state.interval}, "
+                f"analog_interval={self.config.analog_interval}."
+            )
         else:
             print("保存配置失敗")
         return True

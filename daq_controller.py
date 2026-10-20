@@ -5,12 +5,12 @@ from nidaqmx.stream_writers import AnalogMultiChannelWriter
 import traceback
 import numpy as np
 from typing import List
-from threading import Lock
+from threading import RLock
 import copy
 from app_logger import log_exception
 
 class DAQController:
-    def __init__(self, device_name: str, channels: dict[str, List[str]], sample_rate: int = 1000, buffer_size: int = 1000):
+    def __init__(self, device_name: str, channels: dict[str, List[str]], sample_rate: int = 1000, buffer_size: int = 13000):
         self.device_name = device_name
         self.ao_task = None
         self.do_task = None
@@ -19,7 +19,9 @@ class DAQController:
         self.sample_rate = sample_rate
         self.buffer_size = buffer_size
         self.voltages : List[float] = [0.0] * len(self.channels.get('ao', []))
-        self.lock = Lock()
+        self.lock = RLock()
+        self.samples_written = 0
+        self.samples_generated = 0
 
     def __enter__(self):
         self.initialize()
@@ -45,10 +47,13 @@ class DAQController:
             self.ao_task.timing.cfg_samp_clk_timing(self.sample_rate,
                                                     sample_mode=AcquisitionType.CONTINUOUS, 
                                                     samps_per_chan=self.buffer_size)
+            self.ao_task.out_stream.output_buf_size = self.buffer_size + 3000
             
             self.ao_task.out_stream.regen_mode = RegenerationMode.DONT_ALLOW_REGENERATION
 
-            self.ao_task.register_every_n_samples_transferred_from_buffer_event(self.buffer_size, self._buffer_callback)
+            self.ao_task.register_every_n_samples_transferred_from_buffer_event(
+                self.sample_rate, self._buffer_callback
+            )
 
             for ch in self.channels.get('do', []):
                 self.do_task.do_channels.add_do_chan(ch)
@@ -77,21 +82,85 @@ class DAQController:
 
         try:
             with self.lock:
-                self.voltages = voltages
-
-                samples = np.array([np.full(self.buffer_size, v,dtype=np.float64) for v in voltages])
+                self.voltages = list(voltages)
+                samples = np.array([np.full(self.buffer_size, v, dtype=np.float64) for v in voltages])
 
                 writer = AnalogMultiChannelWriter(self.ao_task.out_stream, auto_start=False)
 
                 if not self.ao_task.is_task_done():
                     self.ao_task.stop()
                 writer.write_many_sample(samples)
+                self.samples_written = self.buffer_size
+                self.samples_generated = 0
                 self.ao_task.start()
             return True
         except Exception as e:
             print(f"輸出電壓時發生錯誤: {e}")
             log_exception("輸出電壓例外")
             return False
+
+    def append_voltages(self, voltages: List[float], sample_count: int) -> bool:
+        if not self.ao_task:
+            return False
+        if len(voltages) != len(self.channels.get('ao', [])):
+            raise ValueError(f"錯誤：輸入電壓數量 {len(voltages)} 與通道數量 {len(self.channels.get('ao', []))} 不匹配")
+        if sample_count <= 0:
+            raise ValueError("追加的 samples 數量必須大於 0")
+
+        try:
+            with self.lock:
+                samples = np.array([
+                    np.full(sample_count, voltage, dtype=np.float64)
+                    for voltage in voltages
+                ])
+                writer = AnalogMultiChannelWriter(self.ao_task.out_stream, auto_start=False)
+                writer.write_many_sample(samples)
+                self.samples_written += sample_count
+            return True
+        except Exception as e:
+            print(f"追加電壓資料時發生錯誤: {e}")
+            log_exception("追加電壓資料例外")
+            return False
+
+    def get_samples_generated(self) -> int:
+        with self.lock:
+            return self.samples_generated
+
+    def get_pending_samples(self) -> int:
+        with self.lock:
+            return max(self.samples_written - self.samples_generated, 0)
+
+    def stop_output(self) -> None:
+        with self.lock:
+            if self.ao_task and not self.ao_task.is_task_done():
+                self.ao_task.stop()
+
+    def start_output(self) -> None:
+        with self.lock:
+            if self.ao_task:
+                self.ao_task.start()
+
+    def clear_output(self) -> None:
+        with self.lock:
+            if self.ao_task:
+                if not self.ao_task.is_task_done():
+                    self.ao_task.stop()
+                self.ao_task.close()
+                self.ao_task = nidaqmx.Task(new_task_name='ao task')
+                for channel in self.channels.get('ao', []):
+                    self.ao_task.ao_channels.add_ao_voltage_chan(channel)
+                self.ao_task.timing.cfg_samp_clk_timing(
+                    self.sample_rate,
+                    sample_mode=AcquisitionType.CONTINUOUS,
+                    samps_per_chan=self.buffer_size,
+                )
+                self.ao_task.out_stream.output_buf_size = self.buffer_size + 3000
+                self.ao_task.out_stream.regen_mode = RegenerationMode.DONT_ALLOW_REGENERATION
+                self.ao_task.register_every_n_samples_transferred_from_buffer_event(
+                    self.sample_rate, self._buffer_callback
+                )
+                self.samples_written = 0
+                self.samples_generated = 0
 
     def _buffer_callback(self, task_handle, event_type, sample_number, callback_data):
         with self.lock:
@@ -106,10 +175,11 @@ class DAQController:
                     print(f"無法檢查task狀態:{e}")
                     return 0
 
-                if self.voltages is not None:
-                    samples = np.array([np.full(self.buffer_size, v,dtype=np.float64) for v in self.voltages])
-                    writer = AnalogMultiChannelWriter(self.ao_task.out_stream, auto_start=False)
-                    writer.write_many_sample(samples)
+                try:
+                    generated = self.ao_task.out_stream.total_samp_per_chan_generated
+                    self.samples_generated = max(self.samples_generated, generated)
+                except nidaqmx.errors.DaqError:
+                    pass
             except nidaqmx.errors.DaqError as e:
                 print(f"緩衝區回呼錯誤: {e}")
                 log_exception("緩衝區回呼例外")
