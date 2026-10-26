@@ -8,6 +8,30 @@ from datetime import datetime
 from app_logger import log_exception
 
 class LogManager:
+    LOG_COLUMNS = [
+        "record_type",
+        "index",
+        "utc_time",
+        "local_time",
+        "success",
+        "analog_interval",
+        "analog_batch_interval",
+        "analog_raw_x",
+        "analog_raw_y",
+        "analog_raw_z",
+        "analog_calibrated_x",
+        "analog_calibrated_y",
+        "analog_calibrated_z",
+        "bx_nt",
+        "by_nt",
+        "bz_nt",
+        "vx",
+        "vy",
+        "vz",
+        "samples",
+        "buffer_pending",
+    ]
+
     def __init__(self, log_dir: str, flush_interval: int = 10):
         self.log_dir = log_dir
         self.flush_interval = flush_interval
@@ -87,7 +111,7 @@ class LogManager:
             if not self._log:
                 return
             try:
-                df = pd.DataFrame(self._log)
+                df = pd.DataFrame(self._log).reindex(columns=self.LOG_COLUMNS)
                 write_header = not os.path.exists(self.log_file)
                 df.to_csv(self.log_file, mode='a', header=write_header, index=False)
                 self._log = []

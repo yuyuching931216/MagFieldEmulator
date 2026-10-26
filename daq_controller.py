@@ -196,35 +196,33 @@ class DAQController:
             log_exception("輸出數位信號例外")
             return False
         
-    def read_analog(self) -> List[float]:
+    def read_analog_samples(self) -> List[List[float]]:
         if not self.ai_task:
-            return []
+            return [[], [], []]
         try:
-            # reader = AnalogMultiChannelReader()
-
             raw_data = self.ai_task.read(number_of_samples_per_channel=READ_ALL_AVAILABLE)
             raw_data = copy.deepcopy(raw_data)
-
-            # print(type(raw_data))
-            # print(len(raw_data))
 
             if len(raw_data) < 3:
                 raise ValueError(f"Expected 3 channels, got {len(raw_data)}")
 
-            if any(len(row) == 0 for row in raw_data[:3]):
-                return
+            channel_samples = [list(raw_data[index]) for index in range(3)]
+            sample_count = min(len(samples) for samples in channel_samples)
+            if sample_count == 0:
+                return [[], [], []]
 
-
-            index = len(raw_data[0]) - 1
-            # print("index =", index)
-
-            data = [raw_data[0][index], raw_data[1][index], raw_data[2][index]]
-            return data
-                # print(f'{type(raw_data[0])}')
+            return [samples[:sample_count] for samples in channel_samples]
         except Exception as e:
             print(f"讀取類比信號時發生錯誤: {e}")
             log_exception("讀取類比信號例外")
+            return [[], [], []]
+
+    def read_analog(self) -> List[float]:
+        """Read all available samples and return the latest sample per channel."""
+        samples = self.read_analog_samples()
+        if not samples or any(not channel for channel in samples):
             return []
+        return [channel[-1] for channel in samples]
 
     def close(self):
         with self.lock:

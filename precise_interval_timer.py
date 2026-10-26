@@ -1,18 +1,8 @@
 import time
 import threading
 import concurrent.futures
-import logging
 from enum import Enum, auto
 from typing import Callable, Any, Optional
-
-# ==========================================
-# System Configuration
-# ==========================================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
 logger = logging.getLogger(__name__)
 
 class OverlapStrategy(Enum):
@@ -43,6 +33,7 @@ class PreciseIntervalTimer:
         self._strategy = strategy
         self._max_pending = max_pending
         self._inject_timer = inject_timer
+        self._name = kwargs.pop("name", "timer")
         self._args = args
         self._kwargs = kwargs
         
@@ -58,6 +49,14 @@ class PreciseIntervalTimer:
         # --- Crash-detection state (run loop dying unexpectedly) ---
         self._crashed_exception: Optional[BaseException] = None
         self._crashed_event = threading.Event()
+        self._stats_lock = threading.Lock()
+        self._callback_count = 0
+        self._skipped_count = 0
+        self._lag_count = 0
+        self._callback_duration_total = 0.0
+        self._callback_duration_max = 0.0
+        self._last_callback_time: Optional[float] = None
+        self._last_summary_time = time.monotonic()
 
     @property
     def crashed(self) -> bool:
@@ -90,6 +89,14 @@ class PreciseIntervalTimer:
         # Clear any crash state left over from a previous run before starting fresh.
         self._crashed_exception = None
         self._crashed_event.clear()
+        with self._stats_lock:
+            self._callback_count = 0
+            self._skipped_count = 0
+            self._lag_count = 0
+            self._callback_duration_total = 0.0
+            self._callback_duration_max = 0.0
+            self._last_callback_time = None
+            self._last_summary_time = time.monotonic()
 
         self._stop_event.clear()
         self._executor = self._create_executor()
@@ -126,6 +133,8 @@ class PreciseIntervalTimer:
         
         if self._thread and self._thread.is_alive():
             self._thread.join()
+
+        self._log_summary(time.monotonic())
 
         with self._futures_lock:
             pending_or_running = list(self._active_futures)
@@ -200,7 +209,9 @@ class PreciseIntervalTimer:
 
             if self._strategy == OverlapStrategy.SKIP:
                 if self._active_futures:
-                    logger.warning("Strategy SKIP: Previous execution is still active. Dropping current tick.")
+                    with self._stats_lock:
+                        self._skipped_count += 1
+                    logger.debug("Strategy SKIP: Previous execution is still active. Dropping current tick.")
                     return
 
             elif self._strategy == OverlapStrategy.LATEST:
@@ -216,16 +227,27 @@ class PreciseIntervalTimer:
                     return
 
         try:
-            if self._inject_timer:
-                future = self._executor.submit(self._callback, self, *self._args, **self._kwargs)
-            else:
-                future = self._executor.submit(self._callback, *self._args, **self._kwargs)
+            future = self._executor.submit(self._execute_callback)
             with self._futures_lock:
                 self._active_futures.add(future)
             # Attach the exception handler
             future.add_done_callback(self._handle_future_result)
         except RuntimeError as e:
             logger.error(f"Failed to submit task (executor might be shut down): {e}")
+
+    def _execute_callback(self):
+        started = time.perf_counter()
+        try:
+            if self._inject_timer:
+                return self._callback(self, *self._args, **self._kwargs)
+            return self._callback(*self._args, **self._kwargs)
+        finally:
+            duration = time.perf_counter() - started
+            with self._stats_lock:
+                self._callback_count += 1
+                self._callback_duration_total += duration
+                self._callback_duration_max = max(self._callback_duration_max, duration)
+                self._last_callback_time = time.time()
 
     def _run_loop(self) -> None:
         """Core high-precision loop."""
@@ -245,8 +267,14 @@ class PreciseIntervalTimer:
                         break
                 else:
                     lag = abs(sleep_duration)
-                    logger.warning(f"Timer lagging behind by {lag:.4f}s. Resetting baseline.")
+                    with self._stats_lock:
+                        self._lag_count += 1
+                    logger.debug(f"Timer lagging behind by {lag:.4f}s. Resetting baseline.")
                     next_call_time = time.perf_counter()
+
+                now = time.monotonic()
+                if now - self._last_summary_time >= 10.0:
+                    self._log_summary(now)
         except Exception as e:
             # Anything unexpected escaping the loop body means sampling has
             # silently stopped — record it so callers can detect and react,
@@ -261,6 +289,31 @@ class PreciseIntervalTimer:
                 f"resources, inspect crash_reason, then start() to resume.",
                 exc_info=True,
             )
+
+    def _log_summary(self, now: float) -> None:
+        with self._stats_lock:
+            elapsed = max(now - self._last_summary_time, 0.001)
+            callback_count = self._callback_count
+            skipped_count = self._skipped_count
+            lag_count = self._lag_count
+            duration_total = self._callback_duration_total
+            duration_max = self._callback_duration_max
+            self._callback_count = 0
+            self._skipped_count = 0
+            self._lag_count = 0
+            self._callback_duration_total = 0.0
+            self._callback_duration_max = 0.0
+            self._last_summary_time = now
+
+        logger.info(
+            f"Timer summary name={self._name} interval={self._interval}s "
+            f"period={elapsed:.1f}s callbacks={callback_count} "
+            f"expected_ticks={elapsed / self._interval:.1f} "
+            f"skipped={skipped_count} lag={lag_count} "
+            f"callback_avg_ms={duration_total / max(callback_count, 1) * 1000:.3f} "
+            f"callback_max_ms={duration_max * 1000:.3f} "
+            f"running={self.is_running}"
+        )
 
 
 # ==========================================

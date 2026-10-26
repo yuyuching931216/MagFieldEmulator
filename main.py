@@ -4,7 +4,7 @@ import os
 import json
 import signal
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List
 from sklearn.linear_model import LinearRegression
 
@@ -39,6 +39,8 @@ class MagneticFieldController:
         self._timer = None
         self._analog_timer = None
         self._analog_callback = None
+        self._analog_sample_buffer = [[], [], []]
+        self._analog_sample_times = []
         self._daq = None
         self._resume_sample_offset = 0
         self._resume_needs_rebuild = False
@@ -85,6 +87,7 @@ class MagneticFieldController:
         self.command_interface.register_command("resume", lambda _: self._cmd_resume(), "恢復輸出")
         self.command_interface.register_command("set interval", self._cmd_set_interval, "設定輸出間隔，用法: set interval <秒>")
         self.command_interface.register_command("set analog interval", self._cmd_set_analog_interval, "設定 analog 讀取間隔，用法: set analog interval <秒>")
+        self.command_interface.register_command("set analog batch interval", self._cmd_set_analog_batch_interval, "設定 analog 批次讀取間隔，用法: set analog batch interval <秒>")
         self.command_interface.register_command("status", lambda _: self._cmd_status(), "顯示目前狀態")
         self.command_interface.register_command("save config", lambda _: self._cmd_save_config(), "保存當前設定")
         self.command_interface.register_command("stop", lambda _: self._cmd_stop(), "停止程式")
@@ -104,19 +107,19 @@ class MagneticFieldController:
             if os.path.exists(config_file):
                 with open(config_file, 'r', encoding='utf-8') as f:
                     config_data = json.load(f)
-                migrated = "analog_interval" not in config_data
-                if migrated:
+                migrated_analog_interval = "analog_interval" not in config_data
+                migrated_batch_interval = "analog_batch_interval" not in config_data
+                if migrated_analog_interval:
                     config_data["analog_interval"] = config_data.get(
                         "interval", default_config.interval
                     )
+                if migrated_batch_interval:
+                    config_data["analog_batch_interval"] = default_config.analog_batch_interval
                 config = AppConfig.from_dict(config_data)
-                if migrated:
+                if migrated_analog_interval or migrated_batch_interval:
                     with open(config_file, 'w', encoding='utf-8') as f:
                         json.dump(config.to_dict(), f, indent=2, ensure_ascii=False)
-                    print(
-                        "Config updated: added analog_interval="
-                        f"{config.analog_interval} from interval."
-                    )
+                    print("Config updated with analog sampling settings.")
                 return config
             else:
                 with open(config_file, 'w', encoding='utf-8') as f:
@@ -135,6 +138,7 @@ class MagneticFieldController:
                 "interval": self.state.interval,
             }
             config_data["analog_interval"] = self.config.analog_interval
+            config_data["analog_batch_interval"] = self.config.analog_batch_interval
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(config_data, f, indent=2, ensure_ascii=False)
             return True
@@ -202,65 +206,152 @@ class MagneticFieldController:
             self.state.task_active = True
             daq.write_digital(self.digital_states)
             daq.write_voltages([0, 0, 0, 6])
-            offset_sum = [0, 0, 0]
             self.analog_offset = [0, 0, 0]
             # 預熱
             for i in range(6):
-                daq.read_analog()
+                daq.read_analog_samples()
                 time.sleep(0.5)
 
-            
-            # 讀ai 3 次
+            offset_samples = [[], [], []]
             for i in range(3):
-                analog_data = daq.read_analog()
-                for j in range(3):
-                    offset_sum[j] += analog_data[j]
-
-                print(f'ai read {analog_data}')
-                
+                analog_data = daq.read_analog_samples()
+                if any(not channel for channel in analog_data):
+                    raise RuntimeError("校正時未取得完整的 analog samples")
+                for channel_index in range(3):
+                    offset_samples[channel_index].extend(analog_data[channel_index])
                 time.sleep(1)
 
-            # 求平均作為offset
-            for i in range(3):
-                self.analog_offset[i] = offset_sum[i] / 3
+            for channel_index in range(3):
+                self.analog_offset[channel_index] = (
+                    sum(offset_samples[channel_index]) / len(offset_samples[channel_index])
+                )
             print(f"已矯正DUT誤差，{self.analog_offset}")
-            
 
             print("DAQ任務已初始化，開始輸出...")
             daq.clear_output()
             self.state.current_row = 0
 
+            self._analog_sample_buffer = [[], [], []]
+            self._analog_sample_times = []
+
             def analog_loop(timer):
                 if self.state.stop or self.state.paused:
                     return
-                analog_data = daq.read_analog()
-                success = bool(analog_data and len(analog_data) >= 3)
-                entry = {
-                    "record_type": "analog_measurement",
-                    "index": None,
-                    "utc_time": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-                    "local_time": datetime.now().replace(microsecond=0).isoformat(),
-                    "success": success,
-                    "analog_interval": self.config.analog_interval,
-                }
-                if success:
-                    entry.update({
-                        "analog_raw_x": analog_data[0],
-                        "analog_raw_y": analog_data[1],
-                        "analog_raw_z": analog_data[2],
-                        "analog_calibrated_x": analog_data[0] / 10 * 100000,
-                        "analog_calibrated_y": analog_data[1] / 10 * 100000,
-                        "analog_calibrated_z": analog_data[2] / 10 * 100000,
+                analog_data = daq.read_analog_samples()
+                if any(not channel for channel in analog_data):
+                    self._analog_failure_count += 1
+                    print(
+                        f"[ANALOG] read failed batches={self._analog_failure_count}"
+                    )
+                    now = datetime.now(timezone.utc)
+                    self.log_manager.add_entry({
+                        "record_type": "analog_measurement",
+                        "index": None,
+                        "utc_time": now.isoformat(),
+                        "local_time": now.astimezone().isoformat(),
+                        "success": False,
+                        "analog_interval": self.config.analog_interval,
+                        "analog_batch_interval": self.config.analog_batch_interval,
                     })
-                self.log_manager.add_entry(entry)
+                    return
+
+                sample_count = len(analog_data[0])
+                analog_batch_count = getattr(self, "_analog_batch_count", 0) + 1
+                analog_total_samples = getattr(self, "_analog_total_samples", 0) + sample_count
+                analog_measurement_count = getattr(self, "_analog_measurement_count", 0)
+                analog_last_value = getattr(self, "_analog_last_value", None)
+                analog_failure_count = getattr(self, "_analog_failure_count", 0)
+                batch_end = datetime.now(timezone.utc)
+                sample_start = batch_end - timedelta(
+                    seconds=(sample_count - 1) / self.DAQ_SAMPLE_RATE
+                )
+                for sample_index in range(sample_count):
+                    for channel_index in range(3):
+                        self._analog_sample_buffer[channel_index].append(
+                            analog_data[channel_index][sample_index]
+                        )
+                    self._analog_sample_times.append(
+                        sample_start + timedelta(
+                            seconds=sample_index / self.DAQ_SAMPLE_RATE
+                        )
+                    )
+
+                samples_per_interval = round(
+                    self.config.analog_interval * self.DAQ_SAMPLE_RATE
+                )
+                if samples_per_interval <= 0:
+                    raise ValueError(
+                        "analog_interval 轉換後的 DAQ samples 必須大於 0"
+                    )
+
+                while len(self._analog_sample_times) >= samples_per_interval:
+                    window_end = samples_per_interval
+                    window = [
+                        sum(channel[:window_end]) / window_end
+                        for channel in self._analog_sample_buffer
+                    ]
+                    timestamp = self._analog_sample_times[window_end - 1]
+                    del self._analog_sample_times[:window_end]
+                    for channel in self._analog_sample_buffer:
+                        del channel[:window_end]
+
+                    corrected = [
+                        window[channel_index] - self.analog_offset[channel_index]
+                        for channel_index in range(3)
+                    ]
+                    self.log_manager.add_entry({
+                        "record_type": "analog_measurement",
+                        "index": None,
+                        "utc_time": timestamp.isoformat(),
+                        "local_time": timestamp.astimezone().isoformat(),
+                        "success": True,
+                        "analog_interval": self.config.analog_interval,
+                        "analog_batch_interval": self.config.analog_batch_interval,
+                        "analog_raw_x": corrected[0],
+                        "analog_raw_y": corrected[1],
+                        "analog_raw_z": corrected[2],
+                        "analog_calibrated_x": corrected[0] / 10 * 100000,
+                        "analog_calibrated_y": corrected[1] / 10 * 100000,
+                        "analog_calibrated_z": corrected[2] / 10 * 100000,
+                    })
+                    analog_measurement_count += 1
+                    analog_last_value = corrected
+
+                self._analog_batch_count = analog_batch_count
+                self._analog_total_samples = analog_total_samples
+                self._analog_measurement_count = analog_measurement_count
+                self._analog_last_value = analog_last_value
+                self._analog_failure_count = analog_failure_count
+                now = time.monotonic()
+                if now - self._analog_summary_time >= 10.0:
+                    timer_state = "running" if self._analog_timer and self._analog_timer.is_running else "stopped"
+                    print(
+                        f"[ANALOG] batches={analog_batch_count} samples={analog_total_samples} "
+                        f"measurements={analog_measurement_count} "
+                        f"carry_over={len(self._analog_sample_times)} "
+                        f"failed={analog_failure_count} last={analog_last_value} "
+                        f"timer={timer_state}"
+                    )
+                    self._analog_batch_count = 0
+                    self._analog_total_samples = 0
+                    self._analog_measurement_count = 0
+                    self._analog_failure_count = 0
+                    self._analog_summary_time = now
 
             self._analog_callback = analog_loop
+            self._analog_batch_count = 0
+            self._analog_total_samples = 0
+            self._analog_measurement_count = 0
+            self._analog_failure_count = 0
+            self._analog_last_value = None
+            self._analog_summary_time = time.monotonic()
             self._analog_timer = PreciseIntervalTimer(
-                interval_seconds=self.config.analog_interval,
+                interval_seconds=self.config.analog_batch_interval,
                 callback=self._analog_callback,
                 strategy=OverlapStrategy.SKIP,
                 max_pending=1,
                 inject_timer=True,
+                name="analog_batch",
             )
             self._analog_timer.start()
 
@@ -310,14 +401,11 @@ class MagneticFieldController:
                 for row_index, row, voltages, sample_count in rows:
                     write_success = daq.append_voltages(voltages, sample_count)
                     pending = daq.get_pending_samples()
-                    print(
-                        f"[DAQ INPUT] index={row_index} "
-                        f"B=({row.Bx:.1f}, {row.By:.1f}, {row.Bz:.1f}) nT -> "
-                        f"V=({voltages[0]:.4f}, {voltages[1]:.4f}, {voltages[2]:.4f}) "
-                        f"samples={sample_count} write={'OK' if write_success else 'FAILED'} "
-                        f"buffer_pending={pending}"
-                    )
                     if not write_success:
+                        print(
+                            f"[DAQ OUTPUT] write failed index={row_index} "
+                            f"pending={pending}"
+                        )
                         return len(rows), sample_total
                     self.log_manager.add_entry({
                         "record_type": "daq_input",
@@ -343,8 +431,8 @@ class MagneticFieldController:
             )
             initial_rows, initial_samples = append_rows(0, initial=True)
             print(
-                f"[DAQ BUFFER] initial load complete: added={initial_rows} rows, "
-                f"added_samples={initial_samples}, pending={daq.get_pending_samples()}"
+                f"[DAQ OUTPUT] initial rows={initial_rows} samples={initial_samples} "
+                f"pending={daq.get_pending_samples()} status=OK"
             )
             daq.start_output()
 
@@ -363,22 +451,18 @@ class MagneticFieldController:
                 pending = daq.get_pending_samples()
                 if pending > self.MIN_PENDING_SAMPLES:
                     print(
-                        f"[DAQ BUFFER] update skipped: pending={pending} samples "
+                        f"[DAQ OUTPUT] update skipped pending={pending} samples "
                         f"(> threshold={self.MIN_PENDING_SAMPLES})"
                     )
                     return
 
-                print(
-                    f"[DAQ BUFFER] update started: "
-                    f"target_seconds={self.BUFFER_UPDATE_INTERVAL_SECONDS:.1f}, "
-                    f"interval={self.state.interval}"
-                )
                 added_rows, added_samples = append_rows(
                     round(self.BUFFER_UPDATE_INTERVAL_SECONDS / self.state.interval)
                 )
                 print(
-                    f"[DAQ BUFFER] update complete: added={added_rows} rows, "
-                    f"added_samples={added_samples}, pending={daq.get_pending_samples()}"
+                    f"[DAQ OUTPUT] rows={added_rows} samples={added_samples} "
+                    f"pending={daq.get_pending_samples()} "
+                    f"current_row={self.state.current_row} status=OK"
                 )
 
             timer = PreciseIntervalTimer(
@@ -387,6 +471,7 @@ class MagneticFieldController:
                 strategy=OverlapStrategy.SKIP,
                 max_pending=1,
                 inject_timer=True,
+                name="daq_output",
             )
             self._timer = timer
             timer.start()
@@ -465,8 +550,10 @@ class MagneticFieldController:
             self.config.analog_interval = value
             if self._analog_timer is not None:
                 self._analog_timer.stop(timeout=5.0)
+                self._analog_sample_buffer = [[], [], []]
+                self._analog_sample_times = []
                 self._analog_timer = PreciseIntervalTimer(
-                    interval_seconds=value,
+                    interval_seconds=self.config.analog_batch_interval,
                     callback=self._analog_callback,
                     strategy=OverlapStrategy.SKIP,
                     max_pending=1,
@@ -479,6 +566,35 @@ class MagneticFieldController:
             print(f"Invalid analog interval: {e}")
             print("Usage: set analog interval <seconds>")
         return True
+
+    def _cmd_set_analog_batch_interval(self, cmd: str) -> bool:
+        try:
+            parts = cmd.split()
+            if len(parts) != 5:
+                raise ValueError("parameter count is invalid")
+
+            value = float(parts[4])
+            if value <= 0:
+                print("Analog batch interval must be greater than 0 seconds.")
+                return True
+
+            self.config.analog_batch_interval = value
+            if self._analog_timer is not None:
+                self._analog_timer.stop(timeout=5.0)
+                self._analog_timer = PreciseIntervalTimer(
+                    interval_seconds=value,
+                    callback=self._analog_callback,
+                    strategy=OverlapStrategy.SKIP,
+                    max_pending=1,
+                    inject_timer=True,
+                )
+                if not self.state.paused:
+                    self._analog_timer.start()
+            print(f"Analog batch interval set to {value} seconds.")
+        except ValueError as e:
+            print(f"Invalid analog batch interval: {e}")
+            print("Usage: set analog batch interval <seconds>")
+        return True
         
     def _cmd_status(self) -> bool:
         current_index = self.state.current_row
@@ -489,6 +605,7 @@ class MagneticFieldController:
         print(f"進度：{current_index}/{total_rows} ({progress:.1f}%)")
         print(f"輸出間隔：{self.state.interval} 秒")
         print(f"Analog interval: {self.config.analog_interval} seconds")
+        print(f"Analog batch interval: {self.config.analog_batch_interval} seconds")
         print(f"電壓限制：±{self.state.voltage_limit} V")
         print(f"日誌緩存條目：{self.log_manager.entry_count}")
         return True
@@ -498,7 +615,8 @@ class MagneticFieldController:
             print(
                 "Config updated: "
                 f"interval={self.state.interval}, "
-                f"analog_interval={self.config.analog_interval}."
+                f"analog_interval={self.config.analog_interval}, "
+                f"analog_batch_interval={self.config.analog_batch_interval}."
             )
         else:
             print("保存配置失敗")
