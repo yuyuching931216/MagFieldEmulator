@@ -64,15 +64,16 @@ The program reads its configuration from `config.json`. A default configuration 
 | `csv_log_folder` | Directory for generated CSV logs | `"logs"` |
 | `device_name` | DAQ device name | `"Dev1"` |
 | `nt_to_volt` | NanoTesla to voltage conversion scale | `1e-05` |
-| `interval` | DAQ output interval in seconds | `60.0` |
+| `daq_output_interval` | DAQ output interval in seconds | `60.0` |
 | `analog_interval` | Analog sample aggregation interval in seconds | `60.0` |
 | `analog_batch_interval` | DAQ batch read interval in seconds | `1.0` |
 | `log_flush_interval` | Number of log entries before flush to CSV | `10` |
 
 Notes:
-- `interval` is the magnetic-field output update interval.
+- `daq_output_interval` is the magnetic-field output update interval.
 - `analog_interval` is the interval used to aggregate analog samples before producing one analog measurement.
 - `analog_batch_interval` controls how often the program reads all available AI samples from the DAQ buffer.
+- Older configuration files containing `interval` are migrated to `daq_output_interval` on startup.
 
 ## Usage
 
@@ -92,7 +93,7 @@ The interactive command interface supports the following commands:
 
 - `pause`: pause output
 - `resume`: resume output
-- `set interval <seconds>`: set DAQ output interval
+- `set daq output interval <seconds>`: set DAQ output interval
 - `set analog interval <seconds>`: set analog aggregation interval
 - `set analog batch interval <seconds>`: set AI batch read interval
 - `status`: show current runtime status
@@ -105,17 +106,23 @@ The interactive command interface supports the following commands:
 
 The program records:
 
-- `daq_input` rows for each output row written to the DAQ buffer
+- `daq_output` rows for each output row written to the DAQ buffer
 - `analog_measurement` rows for aggregated analog readings
 - daily runtime text logs for timer, warnings, and operational state
 
 The CSV log contains fields such as:
 
 - UTC/local timestamps
+- `daq_output_interval` for each DAQ output record
 - magnetic field values (`bx_nt`, `by_nt`, `bz_nt`)
 - DAQ output voltages (`vx`, `vy`, `vz`)
 - analog raw and calibrated values (`analog_raw_x/y/z`, `analog_calibrated_x/y/z`)
 - success/error status and sample count
+
+The `utc_time` and `local_time` fields use ISO 8601 timestamps with
+microseconds. The UTC value includes the `+00:00` offset, and the local value
+includes the local timezone offset. `daq_output_interval` records the output
+interval used for the corresponding `daq_output` row.
 
 ## Important Notes
 

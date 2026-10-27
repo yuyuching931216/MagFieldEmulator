@@ -33,7 +33,7 @@ class MagneticFieldController:
         setup_logging(os.path.join(self.base_path, "logs"))
         self.config = self._load_config()
         setup_logging(os.path.join(self.base_path, self.config.csv_log_folder))
-        self.state = AppState(self.config.interval)
+        self.state = AppState(self.config.daq_output_interval)
         self.log_manager = LogManager(os.path.join(self.base_path, self.config.csv_log_folder), self.config.log_flush_interval)
         self.command_interface = CommandInterface()
         self._timer = None
@@ -85,7 +85,7 @@ class MagneticFieldController:
         """註冊所有可用的指令"""
         self.command_interface.register_command("pause", lambda _: self._cmd_pause(), "暫停輸出")
         self.command_interface.register_command("resume", lambda _: self._cmd_resume(), "恢復輸出")
-        self.command_interface.register_command("set interval", self._cmd_set_interval, "設定輸出間隔，用法: set interval <秒>")
+        self.command_interface.register_command("set daq output interval", self._cmd_set_daq_output_interval, "設定 DAQ 輸出間隔，用法: set daq output interval <秒>")
         self.command_interface.register_command("set analog interval", self._cmd_set_analog_interval, "設定 analog 讀取間隔，用法: set analog interval <秒>")
         self.command_interface.register_command("set analog batch interval", self._cmd_set_analog_batch_interval, "設定 analog 批次讀取間隔，用法: set analog batch interval <秒>")
         self.command_interface.register_command("status", lambda _: self._cmd_status(), "顯示目前狀態")
@@ -107,19 +107,29 @@ class MagneticFieldController:
             if os.path.exists(config_file):
                 with open(config_file, 'r', encoding='utf-8') as f:
                     config_data = json.load(f)
+                migrated_daq_output_interval = "daq_output_interval" not in config_data
                 migrated_analog_interval = "analog_interval" not in config_data
                 migrated_batch_interval = "analog_batch_interval" not in config_data
+                if migrated_daq_output_interval:
+                    config_data["daq_output_interval"] = config_data.get(
+                        "interval", default_config.daq_output_interval
+                    )
                 if migrated_analog_interval:
                     config_data["analog_interval"] = config_data.get(
-                        "interval", default_config.interval
+                        "daq_output_interval", default_config.daq_output_interval
                     )
                 if migrated_batch_interval:
                     config_data["analog_batch_interval"] = default_config.analog_batch_interval
                 config = AppConfig.from_dict(config_data)
-                if migrated_analog_interval or migrated_batch_interval:
+                if (
+                    migrated_daq_output_interval
+                    or migrated_analog_interval
+                    or migrated_batch_interval
+                ):
+                    config_data.pop("interval", None)
                     with open(config_file, 'w', encoding='utf-8') as f:
                         json.dump(config.to_dict(), f, indent=2, ensure_ascii=False)
-                    print("Config updated with analog sampling settings.")
+                    print("Config updated with DAQ output and analog sampling settings.")
                 return config
             else:
                 with open(config_file, 'w', encoding='utf-8') as f:
@@ -135,7 +145,7 @@ class MagneticFieldController:
             path = os.path.join(self.base_path, "config.json")
             config_data = {
                 **self.config.to_dict(),
-                "interval": self.state.interval,
+                "daq_output_interval": self.state.daq_output_interval,
             }
             config_data["analog_interval"] = self.config.analog_interval
             config_data["analog_batch_interval"] = self.config.analog_batch_interval
@@ -355,10 +365,12 @@ class MagneticFieldController:
             )
             self._analog_timer.start()
 
-            def samples_for_interval(interval):
-                samples = round(interval * self.DAQ_SAMPLE_RATE)
+            def samples_for_daq_output_interval(daq_output_interval):
+                samples = round(daq_output_interval * self.DAQ_SAMPLE_RATE)
                 if samples <= 0:
-                    raise ValueError("interval 轉換後的 DAQ samples 必須大於 0")
+                    raise ValueError(
+                        "daq_output_interval 轉換後的 DAQ samples 必須大於 0"
+                    )
                 return samples
 
             def voltage_for_row(row):
@@ -376,7 +388,7 @@ class MagneticFieldController:
             def append_rows(row_count, initial=False):
                 rows = []
                 sample_total = 0
-                interval = self.state.interval
+                daq_output_interval = self.state.daq_output_interval
                 while (
                     self.state.current_row < len(self.dataframe)
                     and (initial and sample_total < self.DAQ_SAMPLE_RATE * self.INITIAL_BUFFER_SECONDS
@@ -384,7 +396,9 @@ class MagneticFieldController:
                 ):
                     row_index = self.state.current_row
                     row = self.dataframe.iloc[row_index]
-                    sample_count = samples_for_interval(interval)
+                    sample_count = samples_for_daq_output_interval(
+                        daq_output_interval
+                    )
                     if not initial and self._resume_sample_offset:
                         sample_count = max(sample_count - self._resume_sample_offset, 1)
                         self._resume_sample_offset = 0
@@ -407,11 +421,12 @@ class MagneticFieldController:
                             f"pending={pending}"
                         )
                         return len(rows), sample_total
+                    timestamp = datetime.now(timezone.utc)
                     self.log_manager.add_entry({
-                        "record_type": "daq_input",
+                        "record_type": "daq_output",
                         "index": row_index,
-                        "utc_time": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-                        "local_time": datetime.now().replace(microsecond=0).isoformat(),
+                        "utc_time": timestamp.isoformat(),
+                        "local_time": timestamp.astimezone().isoformat(),
                         "bx_nt": row.Bx,
                         "by_nt": row.By,
                         "bz_nt": row.Bz,
@@ -421,13 +436,14 @@ class MagneticFieldController:
                         "samples": sample_count,
                         "buffer_pending": pending,
                         "success": True,
+                        "daq_output_interval": daq_output_interval,
                     })
                 return len(rows), sample_total
 
             print(
                 f"[DAQ BUFFER] initial load started: "
                 f"target_seconds={self.INITIAL_BUFFER_SECONDS:.1f}, "
-                f"interval={self.state.interval}"
+                f"daq_output_interval={self.state.daq_output_interval}"
             )
             initial_rows, initial_samples = append_rows(0, initial=True)
             print(
@@ -457,7 +473,10 @@ class MagneticFieldController:
                     return
 
                 added_rows, added_samples = append_rows(
-                    round(self.BUFFER_UPDATE_INTERVAL_SECONDS / self.state.interval)
+                    round(
+                        self.BUFFER_UPDATE_INTERVAL_SECONDS
+                        / self.state.daq_output_interval
+                    )
                 )
                 print(
                     f"[DAQ OUTPUT] rows={added_rows} samples={added_samples} "
@@ -498,7 +517,10 @@ class MagneticFieldController:
         if self._daq is not None:
             pending = self._daq.get_pending_samples()
             generated = self._daq.get_samples_generated()
-            samples_per_row = max(round(self.state.interval * self.DAQ_SAMPLE_RATE), 1)
+            samples_per_row = max(
+                round(self.state.daq_output_interval * self.DAQ_SAMPLE_RATE),
+                1,
+            )
             consumed = max(generated, 0)
             self.state.current_row = max(
                 0, self.state.current_row - round(pending / samples_per_row)
@@ -517,7 +539,7 @@ class MagneticFieldController:
         print("已恢復輸出。")
         return True
         
-    def _cmd_set_interval(self, cmd: str) -> bool:
+    def _cmd_set_daq_output_interval(self, cmd: str) -> bool:
         try:
             parts = cmd.split()
             if len(parts) != 3:
@@ -529,11 +551,11 @@ class MagneticFieldController:
             elif val > 3600:  # 限制最大間隔為1小時
                 print("間隔不能超過3600秒（1小時）")
             else:
-                self.state.interval = val
-                print(f"輸出間隔已設為 {val} 秒。")
+                self.state.daq_output_interval = val
+                print(f"DAQ 輸出間隔已設為 {val} 秒。")
         except ValueError as e:
             print(f"無效的數值: {e}")
-            print("語法錯誤，使用：set interval <秒>")
+            print("語法錯誤，使用：set daq output interval <秒>")
         return True
 
     def _cmd_set_analog_interval(self, cmd: str) -> bool:
@@ -603,7 +625,7 @@ class MagneticFieldController:
         
         print(f"狀態：{'暫停中' if self.state.paused else '執行中'}")
         print(f"進度：{current_index}/{total_rows} ({progress:.1f}%)")
-        print(f"輸出間隔：{self.state.interval} 秒")
+        print(f"DAQ 輸出間隔：{self.state.daq_output_interval} 秒")
         print(f"Analog interval: {self.config.analog_interval} seconds")
         print(f"Analog batch interval: {self.config.analog_batch_interval} seconds")
         print(f"電壓限制：±{self.state.voltage_limit} V")
@@ -614,7 +636,7 @@ class MagneticFieldController:
         if self.save_config():
             print(
                 "Config updated: "
-                f"interval={self.state.interval}, "
+                f"daq_output_interval={self.state.daq_output_interval}, "
                 f"analog_interval={self.config.analog_interval}, "
                 f"analog_batch_interval={self.config.analog_batch_interval}."
             )

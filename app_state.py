@@ -2,10 +2,10 @@ import threading
 from typing import Optional
 
 class AppState:
-    def __init__(self, interval: float):
+    def __init__(self, daq_output_interval: float):
         self._lock = threading.RLock()
         self._paused = False
-        self._interval = interval
+        self._daq_output_interval = daq_output_interval
         self._stop = False
         self._current_row = 0
         self._task_active = False
@@ -22,14 +22,14 @@ class AppState:
             self._paused = value
 
     @property
-    def interval(self) -> float:
+    def daq_output_interval(self) -> float:
         with self._lock:
-            return self._interval
+            return self._daq_output_interval
 
-    @interval.setter
-    def interval(self, value: float):
+    @daq_output_interval.setter
+    def daq_output_interval(self, value: float):
         with self._lock:
-            self._interval = value
+            self._daq_output_interval = value
 
     @property
     def stop(self) -> bool:

@@ -33,7 +33,7 @@ class CommandInterface:
         if cmd in self.commands:
             return self.commands[cmd]["handler"](cmd_line)
             
-        # 前綴匹配指令（如 "set interval"）
+        # 前綴匹配指令（如 "set daq output interval"）
         for registered_cmd in self.commands:
             if cmd_line.lower().startswith(registered_cmd):
                 return self.commands[registered_cmd]["handler"](cmd_line)

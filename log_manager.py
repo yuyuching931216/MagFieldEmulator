@@ -14,6 +14,7 @@ class LogManager:
         "utc_time",
         "local_time",
         "success",
+        "daq_output_interval",
         "analog_interval",
         "analog_batch_interval",
         "analog_raw_x",
